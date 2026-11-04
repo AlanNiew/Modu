@@ -256,14 +256,24 @@ fn import_one(db: &Db, covers_dir: &Path, path: &str) -> AppResult<BookSummary> 
     let package = book.package.clone();
     let cover_file = write_cover(covers_dir, &file_hash, &book).ok();
 
-    // 章节字数：一次性算完，搜索/统计/进度估算都要用。
-    let mut chapters: Vec<(usize, String, Option<String>, i64)> = Vec::new();
+    // 章节标题：从目录（nav/NCX）按 path 反查，搜索结果显示「第X章」而不是 chap3.xhtml。
+    let toc_titles: std::collections::HashMap<&str, &str> = package
+        .toc
+        .iter()
+        .filter(|item| !item.label.trim().is_empty())
+        .filter_map(|item| item.path.as_deref().map(|path| (path, item.label.trim())))
+        .collect();
+
+    // 章节字数与正文：一次性算完，搜索/统计/进度估算都要用。
+    let mut chapters: Vec<(usize, String, Option<String>, i64, String)> = Vec::new();
     let mut total_chars: i64 = 0;
     for item in &package.spine {
-        let text = book.read_text(&item.path).unwrap_or_default();
-        let count = plain_text_len(&text) as i64;
+        let html = book.read_text(&item.path).unwrap_or_default();
+        let text = html_to_text(&html);
+        let count = text.chars().filter(|c| !c.is_whitespace()).count() as i64;
         total_chars += count;
-        chapters.push((item.index, item.path.clone(), None, count));
+        let chapter_title = toc_titles.get(item.path.as_str()).map(|s| (*s).to_string());
+        chapters.push((item.index, item.path.clone(), chapter_title, count, text));
     }
 
     let title = if package.title.trim().is_empty() {
@@ -346,13 +356,22 @@ fn import_one(db: &Db, covers_dir: &Path, path: &str) -> AppResult<BookSummary> 
         };
 
         tx.execute("DELETE FROM chapters WHERE book_id = ?1", [id])?;
+        tx.execute("DELETE FROM chapters_fts WHERE book_id = ?1", [id])?;
         {
             let mut stmt = tx.prepare(
                 "INSERT INTO chapters (book_id, ord, href, title, char_count)
                  VALUES (?1, ?2, ?3, ?4, ?5)",
             )?;
-            for (ord, href, title, count) in &chapters {
+            for (ord, href, title, count, _) in &chapters {
                 stmt.execute(rusqlite::params![id, *ord as i64, href, title, count])?;
+            }
+        }
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO chapters_fts (text, href, ord, book_id) VALUES (?1, ?2, ?3, ?4)",
+            )?;
+            for (ord, href, _, _, text) in &chapters {
+                stmt.execute(rusqlite::params![text, href, *ord as i64, id])?;
             }
         }
 
@@ -414,8 +433,16 @@ fn find_ci(haystack: &str, needle: &str) -> Option<usize> {
 ///
 /// 不做完整 HTML 解析——只为字数/进度展示服务，几百万字也只需毫秒级。
 pub fn plain_text_len(html: &str) -> usize {
+    html_to_text(html).chars().filter(|c| !c.is_whitespace()).count()
+}
+
+/// 抽出可见正文：与 [`plain_text_len`] 同一套扫描规则，但保留文本本身。
+///
+/// 结果用于全文索引与搜索摘录，所以把连续空白压成单个空格、去掉首尾空白。
+pub fn html_to_text(html: &str) -> String {
     let bytes = html.as_bytes();
-    let mut count = 0usize;
+    let mut out = String::with_capacity(html.len() / 2);
+    let mut pending_space = false;
     let mut i = 0usize;
 
     while i < bytes.len() {
@@ -489,24 +516,35 @@ pub fn plain_text_len(html: &str) -> usize {
                         .and_then(char::from_u32),
                 };
                 if let Some(ch) = ch {
-                    if !ch.is_whitespace() {
-                        count += 1;
-                    }
+                    push_text(ch, &mut out, &mut pending_space);
                     i += semi + 1;
                     continue;
                 }
             }
         }
 
-        // 多字节 UTF-8：按字符推进，空白不计。
+        // 多字节 UTF-8：按字符推进。
         let ch = html[i..].chars().next().unwrap_or('\u{fffd}');
-        if !ch.is_whitespace() {
-            count += 1;
-        }
+        push_text(ch, &mut out, &mut pending_space);
         i += ch.len_utf8();
     }
 
-    count
+    out.trim().to_string()
+}
+
+/// 把字符追加到正文缓冲：空白折叠成单个空格，且不写在开头。
+fn push_text(ch: char, out: &mut String, pending_space: &mut bool) {
+    if ch.is_whitespace() {
+        if !out.is_empty() {
+            *pending_space = true;
+        }
+        return;
+    }
+    if *pending_space {
+        out.push(' ');
+        *pending_space = false;
+    }
+    out.push(ch);
 }
 
 /// 数据目录布局：`modu.db` + `covers/`。所有可写文件都在这里。
@@ -587,6 +625,20 @@ mod tests {
         })
         .unwrap()
         .len(), 1);
+
+        // 全文索引在导入时写好，长词走 FTS5、短词走逐章扫描，两者都要能命中。
+        assert_eq!(index_status(&db, first.id).unwrap(), 4);
+        let long_hits = search(&db, first.id, "纸上的灯", 10).unwrap();
+        assert!(!long_hits.is_empty(), ">=3 字应命中章节");
+        assert!(long_hits[0].snippet.contains(SNIPPET_MARK_START));
+        assert!(long_hits.iter().all(|hit| hit.index < 4));
+        // 章名从目录反查，搜索结果不该只显示文件名
+        assert!(
+            long_hits.iter().any(|hit| hit.chapter_title.is_some()),
+            "章节标题应从目录回填"
+        );
+        let short_hits = search(&db, first.id, "灯", 10).unwrap();
+        assert!(!short_hits.is_empty(), "单字应回退到扫描");
     }
 }
 
@@ -719,4 +771,214 @@ pub fn bookmark_remove(db: &Db, bookmark_id: i64) -> AppResult<()> {
         }
         Ok(())
     })
+}
+/// 更新书签备注。`None` 或空白字符串等同清空。
+pub fn bookmark_note_set(db: &Db, bookmark_id: i64, note: Option<&str>) -> AppResult<()> {
+    let note = note.map(str::trim).filter(|s| !s.is_empty());
+    db.with(|conn| {
+        let changed = conn.execute(
+            "UPDATE bookmarks SET note = ?2 WHERE id = ?1",
+            rusqlite::params![bookmark_id, note],
+        )?;
+        if changed == 0 {
+            return Err(AppError::NotFound(format!("书签不存在: {bookmark_id}")));
+        }
+        Ok(())
+    })
+}
+
+/// 补写老数据缺失的章节标题（早期导入时只写了字数，没有从目录反查标题）。
+///
+/// 每本书只做一次：全部章节都有标题时直接返回，不打开事务。
+pub fn backfill_chapter_titles(db: &Db, book_id: i64, book: &OpenedBook) -> AppResult<()> {
+    let missing: i64 = db.with(|conn| {
+        Ok(conn.query_row(
+            "SELECT COUNT(*) FROM chapters WHERE book_id = ?1 AND title IS NULL",
+            [book_id],
+            |row| row.get(0),
+        )?)
+    })?;
+    if missing == 0 {
+        return Ok(());
+    }
+
+    let titles: Vec<(i64, String)> = book
+        .package
+        .toc
+        .iter()
+        .filter(|item| !item.label.trim().is_empty())
+        .filter_map(|item| {
+            let path = item.path.as_deref()?;
+            book.package
+                .spine
+                .iter()
+                .find(|s| s.path == path)
+                .map(|s| (s.index as i64, item.label.trim().to_string()))
+        })
+        .collect();
+    if titles.is_empty() {
+        return Ok(());
+    }
+
+    db.with_mut(|conn| {
+        let tx = conn.transaction()?;
+        {
+            let mut stmt =
+                tx.prepare("UPDATE chapters SET title = ?3 WHERE book_id = ?1 AND ord = ?2")?;
+            for (ord, title) in &titles {
+                stmt.execute(rusqlite::params![book_id, ord, title])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    })
+}
+
+/// 一本书已有多少章进了全文索引。
+pub fn index_status(db: &Db, book_id: i64) -> AppResult<usize> {
+    db.with(|conn| {
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM chapters_fts WHERE book_id = ?1",
+            [book_id],
+            |row| row.get(0),
+        )?;
+        Ok(count as usize)
+    })
+}
+
+/// 把章节正文写进 FTS 表。导入时已写；旧数据在首次搜索时按需补建。
+pub fn index_book(db: &Db, book_id: i64, book: &OpenedBook) -> AppResult<usize> {
+    let mut rows: Vec<(String, String, i64)> = Vec::new();
+    for item in &book.package.spine {
+        let html = book.read_text(&item.path).unwrap_or_default();
+        rows.push((html_to_text(&html), item.path.clone(), item.index as i64));
+    }
+    let written = rows.len();
+    db.with_mut(|conn| {
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM chapters_fts WHERE book_id = ?1", [book_id])?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO chapters_fts (text, href, ord, book_id) VALUES (?1, ?2, ?3, ?4)",
+            )?;
+            for (text, href, ord) in &rows {
+                stmt.execute(rusqlite::params![text, href, ord, book_id])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    })?;
+    Ok(written)
+}
+
+/// 一条全文搜索结果。`snippet` 里命中片段用 U+0001 / U+0002 包裹，
+/// 前端据此做高亮，不需要重复解析 HTML。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchHit {
+    pub index: usize,
+    pub href: String,
+    pub chapter_title: Option<String>,
+    pub snippet: String,
+    pub offset: usize,
+}
+
+const SNIPPET_MARK_START: char = '\u{1}';
+const SNIPPET_MARK_END: char = '\u{2}';
+
+/// 全书搜索。>=3 字走 FTS5 trigram（短语匹配，中文无需分词），
+/// 更短的查询 trigram 索引帮不上忙，退回逐章扫描。
+pub fn search(db: &Db, book_id: i64, query: &str, limit: usize) -> AppResult<Vec<SearchHit>> {
+    let needle = query.trim();
+    if needle.is_empty() {
+        return Ok(Vec::new());
+    }
+    if needle.chars().count() >= 3 {
+        match fts_search(db, book_id, needle, limit) {
+            Ok(hits) if !hits.is_empty() => return Ok(hits),
+            _ => {}
+        }
+    }
+    scan_search(db, book_id, needle, limit)
+}
+
+fn fts_search(db: &Db, book_id: i64, needle: &str, limit: usize) -> AppResult<Vec<SearchHit>> {
+    // FTS5 的短语查询：整体加引号，内部引号双写转义。
+    let phrase = format!("\"{}\"", needle.replace('"', "\"\""));
+    db.with(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT f.ord, f.href, c.title,
+                    snippet(chapters_fts, 0, char(1), char(2), '…', 20) AS snip,
+                    instr(f.text, ?4) AS pos
+             FROM chapters_fts f
+             LEFT JOIN chapters c ON c.book_id = f.book_id AND c.ord = f.ord
+             WHERE chapters_fts MATCH ?1 AND f.book_id = ?2
+             ORDER BY rank
+             LIMIT ?3",
+        )?;
+        let rows = stmt.query_map(
+            rusqlite::params![phrase, book_id, limit as i64, needle],
+            |row| {
+                Ok(SearchHit {
+                    index: row.get::<_, i64>(0)? as usize,
+                    href: row.get(1)?,
+                    chapter_title: row.get(2)?,
+                    snippet: row.get(3)?,
+                    offset: row.get::<_, Option<i64>>(4)?.unwrap_or(-1).max(0) as usize,
+                })
+            },
+        )?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    })
+}
+
+fn scan_search(db: &Db, book_id: i64, needle: &str, limit: usize) -> AppResult<Vec<SearchHit>> {
+    db.with(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT f.ord, f.href, c.title, f.text
+             FROM chapters_fts f
+             LEFT JOIN chapters c ON c.book_id = f.book_id AND c.ord = f.ord
+             WHERE f.book_id = ?1
+             ORDER BY f.ord",
+        )?;
+        let mut rows = stmt.query([book_id])?;
+        let mut hits = Vec::new();
+        while let Some(row) = rows.next()? {
+            let index = row.get::<_, i64>(0)? as usize;
+            let href: String = row.get(1)?;
+            let title: Option<String> = row.get(2)?;
+            let text: String = row.get(3)?;
+            if let Some(offset) = text.find(needle) {
+                hits.push(SearchHit {
+                    index,
+                    href,
+                    chapter_title: title,
+                    snippet: make_snippet(&text, offset, needle.chars().count()),
+                    offset,
+                });
+                if hits.len() >= limit {
+                    break;
+                }
+            }
+        }
+        Ok(hits)
+    })
+}
+
+/// 以命中位置为中心截一段上下文，并用 U+0001/U+0002 标出命中。
+fn make_snippet(text: &str, offset: usize, match_chars: usize) -> String {
+    let before: String = text[..offset].chars().rev().take(24).collect::<Vec<_>>().into_iter().rev().collect();
+    let match_len = text[offset..]
+        .char_indices()
+        .nth(match_chars)
+        .map(|(i, _)| i)
+        .unwrap_or_else(|| text[offset..].len());
+    let after: String = text[offset + match_len..].chars().take(24).collect();
+    format!(
+        "{}{}{SNIPPET_MARK_START}{}{SNIPPET_MARK_END}{}",
+        if offset > 0 { "…" } else { "" },
+        before,
+        &text[offset..offset + match_len],
+        after
+    )
 }

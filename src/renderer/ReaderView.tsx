@@ -15,6 +15,8 @@ export interface ReaderApi {
   goToFraction(fraction: number): Promise<void>
   /** 当前章节的可视文本，用于书签摘录 */
   getVisibleText(maxLength?: number): string
+  /** 跳到某章并高亮/滚动到一段引文（全文搜索用）；找不到返回 false */
+  revealText(index: number, quote: string): Promise<boolean>
   /** 仅供 dev 自检：向当前章节文档派发一次滚轮事件，返回是否派发成功 */
   dispatchWheel(deltaY: number): boolean
 }
@@ -63,8 +65,13 @@ export function ReaderView({
     if (!renderer) return
     // 布局属性必须设在 renderer（<foliate-paginator>）上：
     // foliate-view 只是 closed shadow root 外壳，不会把属性转发给 renderer。
-    renderer.setAttribute('flow', 'paginated')
-    renderer.setAttribute('max-column-count', '1')
+    renderer.setAttribute('flow', next.flow)
+    if (next.flow === 'paginated') {
+      renderer.setAttribute('max-column-count', '1')
+    } else {
+      // 滚动模式不需要限列；留着会让内容被拆成多列
+      renderer.removeAttribute('max-column-count')
+    }
     // 上下留白固定 24px：正文贴边不好看，又不值得做成用户选项
     renderer.setAttribute('margin', '24px')
     // 行宽（版心）是用户可调的，直接交给 paginator 的 max-inline-size
@@ -110,6 +117,34 @@ export function ReaderView({
         )
         return true
       },
+      revealText: async (index, quote) => {
+        await goToChapter(index)
+        // goTo 返回时新章节可能还在排版，轮询到内容确实换成目标章再找文本
+        let doc: Document | undefined
+        for (let i = 0; i < 20; i += 1) {
+          const contents = view.renderer?.getContents?.() ?? []
+          const current = contents[0]
+          if (current?.doc && Number(current.index) === index) {
+            doc = current.doc
+            break
+          }
+          await new Promise((resolve) => window.setTimeout(resolve, 100))
+        }
+        const target = doc ?? view.renderer?.getContents?.()[0]?.doc
+        if (!target) return false
+        const range = findQuoteRange(target, quote)
+        if (!range) return false
+        // scrollToAnchor 接受 Range：分页模式下会算出它落在第几列并翻过去
+        await view.renderer?.scrollToAnchor?.(range)
+        // 翻页后 paginator 可能重建/重新排版文档，Range 会失效；
+        // 重新取当前文档、重新定位后再上高亮。
+        await new Promise((resolve) => window.setTimeout(resolve, 220))
+        const after = view.renderer?.getContents?.()[0]?.doc
+        const finalRange =
+          after && after !== target ? (findQuoteRange(after, quote) ?? range) : range
+        markQuote(after && after !== target ? after : target, finalRange)
+        return true
+      },
     }
 
     // 滚轮翻页：分页模式下正文本身不滚动，滚轮累积到阈值就翻一页。
@@ -118,6 +153,8 @@ export function ReaderView({
     let wheelAccum = 0
     let wheelLockedUntil = 0
     const onDocWheel = (event: WheelEvent) => {
+      // 滚动模式交给浏览器原生滚动
+      if (settingsRef.current.flow !== 'paginated') return
       // ctrl/⌘ + 滚轮保留给缩放手势，不拦截
       if (event.ctrlKey || event.metaKey) return
       const target = event.target as HTMLElement | null
@@ -263,4 +300,103 @@ export function ReaderView({
       />
     </div>
   )
+}
+
+/**
+ * 在章节文档里定位一段引文，滚动到可见区并做高亮。
+ *
+ * 匹配前把连续空白压成单个空格（书里换行/缩进到处都是），
+ * 并保留「压缩后字符 → 原始字符下标」的映射，才能反推回 DOM 范围。
+ *
+ * 高亮用 CSS Custom Highlight API（Chromium 105+，WebView2 满足）：
+ * 它不改 DOM，不会破坏 foliate 的分页测量；旧内核退回 <mark> 包裹。
+ */
+function findQuoteRange(doc: Document, quote: string): Range | null {
+  const needle = quote.replace(/\s+/g, ' ').trim()
+  if (!needle || !doc.body) return null
+
+  const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT)
+  const nodes: { node: Text; start: number; end: number }[] = []
+  const map: number[] = []
+  let raw = ''
+  let flat = ''
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+    const text = n as Text
+    const offset = raw.length
+    nodes.push({ node: text, start: offset, end: offset + text.data.length })
+    raw += text.data
+    for (let i = 0; i < text.data.length; i += 1) {
+      const ch = text.data[i]
+      if (/\s/.test(ch)) {
+        if (flat.length > 0 && flat[flat.length - 1] !== ' ') {
+          flat += ' '
+          map.push(offset + i)
+        }
+      } else {
+        flat += ch
+        map.push(offset + i)
+      }
+    }
+  }
+
+  let at = flat.indexOf(needle)
+  if (at < 0 && needle.length > 10) {
+    // 跨节点丢字/异体标点时退一步：用前 10 个字定位
+    at = flat.indexOf(needle.slice(0, 10))
+  }
+  if (at < 0) return null
+
+  const startRaw = map[at]
+  const endRaw = map[Math.min(at + needle.length - 1, map.length - 1)] + 1
+  const startNode = nodes.find((n) => startRaw >= n.start && startRaw < n.end)
+  const endNode = nodes.find((n) => endRaw > n.start && endRaw <= n.end)
+  if (!startNode || !endNode) return null
+
+  const range = doc.createRange()
+  range.setStart(startNode.node, startRaw - startNode.start)
+  range.setEnd(endNode.node, endRaw - endNode.start)
+  return range
+}
+
+function markQuote(doc: Document, range: Range): void {
+  const style = doc.getElementById('modu-hit-style')
+  if (!style) {
+    const el = doc.createElement('style')
+    el.id = 'modu-hit-style'
+    el.textContent =
+      '::highlight(modu-hit) { background-color: rgba(249, 190, 80, .7); color: inherit; }'
+    doc.head.appendChild(el)
+  }
+
+  // 注意：CSS.highlights 是「每个 window 一份」的注册表，
+  // 章节在 iframe 里，必须用 iframe 自己的 window 注册才会渲染。
+  const win = doc.defaultView as (Window & typeof globalThis) | null
+  if (win?.CSS?.highlights && typeof win.Highlight === 'function') {
+    win.CSS.highlights.set('modu-hit', new win.Highlight(range))
+    if (import.meta.env.DEV) {
+      // 调试探针：父窗口留一份最近命中信息，供自动化验证（仅开发期）
+      ;(win.parent as unknown as { __moduHit?: unknown }).__moduHit = {
+        text: range.toString().slice(0, 24),
+        at: Date.now(),
+      }
+    }
+    win.setTimeout(() => win.CSS.highlights.delete('modu-hit'), 5000)
+    return
+  }
+
+  // 老内核兜底：range 起止都在文本节点里，surroundContents 通常会成功
+  const mark = doc.createElement('mark')
+  mark.setAttribute('data-modu-hit', '1')
+  mark.style.cssText = 'background: rgba(249, 190, 80, .7); color: inherit;'
+  try {
+    range.surroundContents(mark)
+    win?.setTimeout(() => {
+      const parent = mark.parentNode
+      if (!parent) return
+      while (mark.firstChild) parent.insertBefore(mark.firstChild, mark)
+      parent.removeChild(mark)
+    }, 5000)
+  } catch {
+    // 跨元素时放弃包裹，仅保留定位
+  }
 }

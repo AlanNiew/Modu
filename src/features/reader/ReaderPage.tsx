@@ -7,6 +7,7 @@ import {
   Minimize2,
   PanelLeft,
   Settings2,
+  Search,
   Bookmark as BookmarkIcon,
 } from 'lucide-react'
 import { openUrl } from '@tauri-apps/plugin-opener'
@@ -20,10 +21,12 @@ import {
   listBookmarks,
   removeBookmark,
   saveProgress,
+  searchBook,
+  setBookmarkNote,
 } from '../../lib/ipc'
 import { decodeLocator, encodeLocator } from '../../lib/locator'
 import { coverUrl } from '../../lib/protocol'
-import type { Bookmark, OpenedBookInfo, SpineItem, TocItem } from '../../lib/types'
+import type { Bookmark, OpenedBookInfo, SearchHit, SpineItem, TocItem } from '../../lib/types'
 import { useLibrary } from '../../store/library'
 import { useReaderSettings } from '../../store/settings'
 import { ReaderView, type ReaderApi, type RelocateState } from '../../renderer/ReaderView'
@@ -118,7 +121,7 @@ interface ReaderPageProps {
   devSpike?: boolean
 }
 
-type SidebarTab = 'toc' | 'bookmarks'
+type SidebarTab = 'toc' | 'bookmarks' | 'search'
 
 /**
  * 阅读器页面。
@@ -149,6 +152,9 @@ export function ReaderPage({ book, onBack, devSpike = false }: ReaderPageProps) 
   const [immersive, setImmersive] = useState(false)
   const [bookmarks, setBookmarks] = useState<Bookmark[]>([])
   const [bookmarksLoading, setBookmarksLoading] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searchResults, setSearchResults] = useState<SearchHit[]>([])
+  const [searching, setSearching] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
 
   const apiRef = useRef<ReaderApi | null>(null)
@@ -365,6 +371,63 @@ export function ReaderPage({ book, onBack, devSpike = false }: ReaderPageProps) 
     [],
   )
 
+  // 全书搜索：输入停顿 280ms 再查，避免每个按键都打一次 IPC。
+  useEffect(() => {
+    const query = searchQuery.trim()
+    if (!query || libraryId == null) {
+      setSearchResults([])
+      setSearching(false)
+      return
+    }
+    setSearching(true)
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        try {
+          const hits = await searchBook(book.id, libraryId, query, 80)
+          setSearchResults(hits)
+        } catch (err) {
+          console.error('[reader] 搜索失败', err)
+          showToast('搜索失败')
+        } finally {
+          setSearching(false)
+        }
+      })()
+    }, 280)
+    return () => window.clearTimeout(timer)
+  }, [searchQuery, book.id, libraryId, showToast])
+
+  const handleJumpSearch = useCallback(async (hit: SearchHit) => {
+    const match = hit.snippet.split('\u0001')[1]?.split('\u0002')[0] ?? ''
+    try {
+      if (match) {
+        const found = await apiRef.current?.revealText(hit.index, match)
+        if (!found) await apiRef.current?.goToChapter(hit.index)
+      } else {
+        await apiRef.current?.goToChapter(hit.index)
+      }
+    } catch (err) {
+      console.error('[reader] 跳转搜索结果失败', err)
+    }
+  }, [])
+
+  const handleBookmarkNote = useCallback(
+    async (bookmark: Bookmark, note: string) => {
+      try {
+        await setBookmarkNote(bookmark.id, note)
+        setBookmarks((prev) =>
+          prev.map((item) =>
+            item.id === bookmark.id ? { ...item, note: note.trim() || null } : item,
+          ),
+        )
+        showToast('备注已保存')
+      } catch (err) {
+        console.error('[reader] 保存备注失败', err)
+        showToast('保存备注失败')
+      }
+    },
+    [showToast],
+  )
+
   const toggleImmersive = useCallback(() => setImmersive((value) => !value), [])
 
   return (
@@ -476,18 +539,88 @@ export function ReaderPage({ book, onBack, devSpike = false }: ReaderPageProps) 
                   <span className="tabular-nums text-overlay0">{bookmarks.length}</span>
                 )}
               </button>
+              <button
+                type="button"
+                onClick={() => setSidebarTab('search')}
+                className={cn(
+                  'flex h-7 w-9 items-center justify-center rounded-md text-[11px] transition',
+                  sidebarTab === 'search'
+                    ? 'bg-surface0 text-text'
+                    : 'text-overlay0 hover:text-text',
+                )}
+                title="全书搜索"
+              >
+                <Search size={12} />
+              </button>
             </div>
 
             <div className="min-h-0 flex-1 overflow-y-auto">
-              {sidebarTab === 'toc' ? (
+              {sidebarTab === 'toc' && (
                 <TocTree items={toc} activePath={activePath} onSelect={jumpToToc} />
-              ) : (
+              )}
+
+              {sidebarTab === 'bookmarks' && (
                 <BookmarksPanel
                   bookmarks={bookmarks}
                   loading={bookmarksLoading}
                   onJump={jumpToBookmark}
                   onRemove={(bookmark) => void handleRemoveBookmark(bookmark)}
+                  onNote={(bookmark, note) => void handleBookmarkNote(bookmark, note)}
                 />
+              )}
+
+              {sidebarTab === 'search' && (
+                <div className="flex h-full flex-col">
+                  <div className="shrink-0 border-b border-surface0/60 p-2">
+                    <div className="flex items-center gap-1.5 rounded-md bg-surface0/50 px-2">
+                      <Search size={12} className="text-overlay0" />
+                      <input
+                        autoFocus
+                        value={searchQuery}
+                        onChange={(event) => setSearchQuery(event.target.value)}
+                        placeholder="搜索全书"
+                        className="h-8 w-full min-w-0 bg-transparent text-[12px] text-text outline-none placeholder:text-overlay0/70"
+                      />
+                    </div>
+                    <div className="mt-1 px-1 text-[10px] tabular-nums text-overlay0/70">
+                      {searching
+                        ? '搜索中…'
+                        : searchQuery.trim()
+                          ? `${searchResults.length} 处结果`
+                          : '输入至少 1 个字'}
+                    </div>
+                  </div>
+                  <div className="min-h-0 flex-1 overflow-y-auto p-1">
+                    {searchResults.map((hit) => {
+                      const [before, rest = ''] = hit.snippet.split('\u0001')
+                      const [match, after = ''] = rest.split('\u0002')
+                      return (
+                        <button
+                          key={`${hit.index}-${hit.offset}`}
+                          type="button"
+                          onClick={() => void handleJumpSearch(hit)}
+                          className="block w-full rounded-md px-2 py-1.5 text-left transition hover:bg-surface0/60"
+                        >
+                          <div className="truncate text-[11px] font-medium text-subtext">
+                            {hit.chapterTitle || hit.href.split('/').pop()}
+                          </div>
+                          <div className="mt-0.5 line-clamp-2 text-[11px] leading-relaxed text-overlay0">
+                            {before}
+                            <mark className="rounded-sm bg-yellow/35 px-0.5 text-text">
+                              {match}
+                            </mark>
+                            {after}
+                          </div>
+                        </button>
+                      )
+                    })}
+                    {!searching && searchQuery.trim() && searchResults.length === 0 && (
+                      <div className="p-3 text-center text-[11px] text-overlay0/70">
+                        没有找到匹配内容
+                      </div>
+                    )}
+                  </div>
+                </div>
               )}
             </div>
 

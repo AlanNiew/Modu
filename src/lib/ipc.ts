@@ -1,5 +1,14 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { BookSummary, Bookmark, ImportOutcome, ListOptions, OpenedBookInfo, ProgressRecord, SectionHtml } from './types'
+import type {
+  BookSummary,
+  Bookmark,
+  ImportOutcome,
+  ListOptions,
+  OpenedBookInfo,
+  ProgressRecord,
+  SearchHit,
+  SectionHtml,
+} from './types'
 
 /** 打开 EPUB，返回书元数据 + spine + 目录；Rust 侧保留 zip 句柄。 */
 export const openBook = (path: string) =>
@@ -72,3 +81,16 @@ export const listBookmarks = (bookId: number) =>
 
 export const removeBookmark = (bookmarkId: number) =>
   invoke<void>('bookmark_remove', { bookmarkId })
+// ---------------------------------------------------------------------------
+// 全书搜索（M3）
+// ---------------------------------------------------------------------------
+
+export const searchBook = (
+  bookId: string,
+  libraryId: number,
+  query: string,
+  limit = 80,
+) => invoke<SearchHit[]>('book_search', { bookId, libraryId, query, limit })
+
+export const setBookmarkNote = (bookmarkId: number, note: string | null) =>
+  invoke<void>('bookmark_note_set', { bookmarkId, note })

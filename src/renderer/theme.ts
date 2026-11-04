@@ -15,6 +15,9 @@ export type ConcreteThemeId = 'dark' | 'light' | 'sepia' | 'green'
 /** 用户可选主题：auto 跟随系统深浅色 */
 export type ThemeId = 'auto' | ConcreteThemeId
 
+/** 排版流向：分页（左右翻）或滚动（上下滑） */
+export type ReadingFlow = 'paginated' | 'scrolled'
+
 export interface ReadingSettings {
   theme: ThemeId
   /** CSS font-family 栈 */
@@ -27,6 +30,8 @@ export interface ReadingSettings {
   paragraphIndent: number
   /** 版心宽度上限，单位 px（传给 paginator 的 max-inline-size） */
   pageWidth: number
+  /** 分页还是滚动阅读 */
+  flow: ReadingFlow
 }
 
 export interface ReadingTheme {
@@ -219,6 +224,7 @@ export const DEFAULT_READING_SETTINGS: ReadingSettings = {
   lineHeight: 1.85,
   paragraphIndent: 2,
   pageWidth: 720,
+  flow: 'paginated',
 }
 
 function systemPrefersDark(): boolean {

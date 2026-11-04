@@ -165,6 +165,10 @@ pub fn library_remove(state: State<'_, AppState>, book_id: i64) -> AppResult<()>
 pub fn library_open(state: State<'_, AppState>, book_id: i64) -> AppResult<OpenedBookInfo> {
     let summary = library::get(&state.db, book_id)?;
     let info = open_into_state(&state, &summary.path, Some(book_id))?;
+    if let Some(book) = state.get_book(&info.id) {
+        // 老数据的章节标题是空的，打开时顺手按目录补一次
+        let _ = library::backfill_chapter_titles(&state.db, book_id, &book);
+    }
     library::mark_opened(&state.db, book_id)?;
     Ok(info)
 }
@@ -221,4 +225,39 @@ pub fn bookmark_list(state: State<'_, AppState>, book_id: i64) -> AppResult<Vec<
 #[tauri::command]
 pub fn bookmark_remove(state: State<'_, AppState>, bookmark_id: i64) -> AppResult<()> {
     library::bookmark_remove(&state.db, bookmark_id)
+}
+// ---------------------------------------------------------------------------
+// 全书搜索（M3）
+// ---------------------------------------------------------------------------
+
+/// 在整本书里搜索关键词。
+///
+/// 索引在导入时已写入 FTS5；老库里的书第一次搜索时按需补建，
+/// 所以这里要拿到已打开的 zip 句柄。
+#[tauri::command]
+pub fn book_search(
+    state: State<'_, AppState>,
+    book_id: String,
+    library_id: i64,
+    query: String,
+    limit: Option<usize>,
+) -> AppResult<Vec<library::SearchHit>> {
+    let book = state
+        .get_book(&book_id)
+        .ok_or_else(|| AppError::NotFound(format!("书籍未打开: {book_id}")))?;
+    if library::index_status(&state.db, library_id)? == 0 {
+        library::index_book(&state.db, library_id, &book)?;
+    }
+    let limit = limit.unwrap_or(80).clamp(1, 300);
+    library::search(&state.db, library_id, &query, limit)
+}
+
+/// 更新书签备注（传空字符串即清空）。
+#[tauri::command]
+pub fn bookmark_note_set(
+    state: State<'_, AppState>,
+    bookmark_id: i64,
+    note: Option<String>,
+) -> AppResult<()> {
+    library::bookmark_note_set(&state.db, bookmark_id, note.as_deref())
 }

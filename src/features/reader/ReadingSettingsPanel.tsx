@@ -8,9 +8,15 @@ import {
   FONT_STACKS,
   THEME_OPTIONS,
   getReadingTheme,
+  type ReadingFlow,
   type ReadingSettings,
   type ThemeId,
 } from '../../renderer/theme'
+
+const FLOW_OPTIONS: Array<{ id: ReadingFlow; label: string }> = [
+  { id: 'paginated', label: '翻页' },
+  { id: 'scrolled', label: '滚动' },
+]
 
 const FONT_OPTIONS: Array<{ kind: 'serif' | 'sans' | 'kai'; label: string }> = [
   { kind: 'serif', label: '宋体' },
@@ -157,6 +163,30 @@ export function ReadingSettingsPanel({
                     {option.label}
                   </button>
                 ))}
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <div className="text-[11px] text-subtext">阅读方式</div>
+              <div className="grid grid-cols-2 gap-1 rounded-lg bg-surface0/50 p-1">
+                {FLOW_OPTIONS.map((option) => (
+                  <button
+                    key={option.id}
+                    type="button"
+                    onClick={() => onPatch({ flow: option.id })}
+                    className={cn(
+                      'rounded-md py-1.5 text-[11px] transition',
+                      settings.flow === option.id
+                        ? 'bg-surface1 text-text'
+                        : 'text-overlay0 hover:text-text',
+                    )}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+              <div className="px-1 text-[10px] leading-relaxed text-overlay0/70">
+                翻页：左右翻，滚轮一滑翻一页；滚动：上下连续滑动
               </div>
             </div>
 

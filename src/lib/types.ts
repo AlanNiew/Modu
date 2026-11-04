@@ -103,3 +103,15 @@ export interface ImportOutcome {
   book: BookSummary | null
   error: string | null
 }
+
+/** 一条全书搜索结果，对应 Rust `library::SearchHit`。 */
+export interface SearchHit {
+  /** spine 序号 */
+  index: number
+  href: string
+  chapterTitle: string | null
+  /** 命中片段，命中文本用 U+0001/U+0002 包裹 */
+  snippet: string
+  /** 命中位置（字符偏移，仅作排序/参考） */
+  offset: number
+}

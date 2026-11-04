@@ -35,7 +35,10 @@ describe('reader settings store', () => {
     await Promise.resolve()
     const raw = localStorage.getItem('modu:reader-settings')
     expect(raw).toBeTruthy()
-    expect(JSON.parse(raw as string).version).toBe(1)
-    expect(JSON.parse(raw as string).state.settings.fontSize).toBe(28)
+    const saved = JSON.parse(raw as string)
+    // v2 起 settings 里新增了 flow/theme=auto；版本号与 store 里的 version 保持一致
+    expect(saved.version).toBe(2)
+    expect(saved.state.settings.fontSize).toBe(28)
+    expect(saved.state.settings.flow).toBe('paginated')
   })
 })
