@@ -397,7 +397,7 @@ export function ReaderPage({ book, onBack, devSpike = false }: ReaderPageProps) 
                 <PanelLeft size={15} />
               </TitleBarButton>
               <TitleBarButton title="沉浸模式" onClick={toggleImmersive}>
-                <Maximize2 size={14} />
+                <Maximize2 size={15} />
               </TitleBarButton>
             </>
           }

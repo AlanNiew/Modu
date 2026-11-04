@@ -2,7 +2,7 @@ import { useVirtualizer } from '@tanstack/react-virtual'
 import { FolderOpen, Library, Search, X } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
-import { TitleBar } from '../../components/TitleBar'
+import { TitleBar, TitleBarButton } from '../../components/TitleBar'
 import { cn } from '../../lib/cn'
 import type { BookSummary, ShelfFilter, ShelfSort } from '../../lib/types'
 import { FILTER_LABELS, SORT_LABELS, useLibrary } from '../../store/library'
@@ -76,6 +76,7 @@ export function ShelfPage({ onOpenBook }: ShelfPageProps) {
 
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const gridRef = useRef<HTMLDivElement | null>(null)
+  const searchRef = useRef<HTMLInputElement | null>(null)
   const [localQuery, setLocalQuery] = useState(query)
   const { columns, rowHeight } = useGridMetrics(gridRef)
 
@@ -115,19 +116,25 @@ export function ShelfPage({ onOpenBook }: ShelfPageProps) {
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-base">
-      {/* 自绘标题栏：品牌 + 导入（窗口按钮在组件内部，永远最右） */}
+      {/* 标题栏：与阅读页同一套（品牌 → 标题；右侧操作组 → 窗口按钮） */}
       <TitleBar
         title="墨读"
         subtitle="图书馆"
         actions={
-          <button
-            type="button"
-            onClick={() => void importFromDialog()}
-            className="flex h-7 items-center gap-1.5 rounded-md bg-blue px-2.5 text-[11px] font-medium text-crust transition hover:bg-lavender"
-          >
-            <FolderOpen size={13} />
-            导入
-          </button>
+          <>
+            <TitleBarButton
+              title="搜索书架"
+              onClick={() => searchRef.current?.focus()}
+            >
+              <Search size={15} />
+            </TitleBarButton>
+            <TitleBarButton
+              title="导入 EPUB"
+              onClick={() => void importFromDialog()}
+            >
+              <FolderOpen size={15} />
+            </TitleBarButton>
+          </>
         }
       />
 
@@ -139,6 +146,7 @@ export function ShelfPage({ onOpenBook }: ShelfPageProps) {
             className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-overlay0"
           />
           <input
+            ref={searchRef}
             value={localQuery}
             onChange={(event) => setLocalQuery(event.target.value)}
             placeholder="搜索书名、作者"

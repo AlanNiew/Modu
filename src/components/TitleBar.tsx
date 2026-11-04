@@ -31,6 +31,12 @@ interface TitleBarProps {
  * - `data-tauri-drag-region` 标出可拖动区域（Tauri 内置脚本处理拖动 + 双击最大化）
  * - 窗口按钮放在拖拽区之外，否则点不到
  * - 拖动逻辑不依赖 JS，窗口缩放由 App 里的 WindowResizeHandles 负责
+ *
+ * 版式在所有页面保持一致（书架 / 阅读器只是内容不同）：
+ * 左：品牌图标 → 可选返回 → 标题 + 副标题
+ * 右：操作组（统一 28×28 图标按钮，按「主操作 → 视图 → 布局 → 沉浸」排序）
+ *     → 分隔线 → 窗口按钮
+ * 页面只决定操作组里有哪几个按钮，不改变它们的大小、间距与排列逻辑。
  */
 export function TitleBar({
   title,
