@@ -1,5 +1,5 @@
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { BookOpen, ChevronLeft, Copy, Minus, Square, X } from 'lucide-react'
+import { ChevronLeft, Copy, Minus, Square, X } from 'lucide-react'
 import {
   forwardRef,
   useEffect,
@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from 'react'
 
+import logoUrl from '../assets/logo.svg'
 import { cn } from '../lib/cn'
 
 interface TitleBarProps {
@@ -49,9 +50,15 @@ export function TitleBar({
     >
       <div
         data-tauri-drag-region
-        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-blue/15 text-blue"
+        className="flex h-7 w-7 shrink-0 items-center justify-center"
       >
-        <BookOpen size={15} />
+        {/* 应用图标同时充当品牌标记：墨滴落进摊开的书里 */}
+        <img
+          src={logoUrl}
+          alt="墨读"
+          draggable={false}
+          className="h-6 w-6 rounded-[7px] shadow-sm shadow-black/30"
+        />
       </div>
 
       {onBack && (

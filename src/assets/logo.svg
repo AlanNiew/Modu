@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-label="墨读">
+  <defs>
+    <!-- 墨色底：左上略亮，右下更深，像一块被灯照着的墨砖 -->
+    <linearGradient id="tile" x1="180" y1="120" x2="860" y2="960" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2a2a3c"/>
+      <stop offset="0.55" stop-color="#181825"/>
+      <stop offset="1" stop-color="#0e0e16"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0" cy="0" r="1" gradientTransform="translate(400 300) rotate(38) scale(620)" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#b4befe" stop-opacity="0.16"/>
+      <stop offset="1" stop-color="#b4befe" stop-opacity="0"/>
+    </radialGradient>
+    <!-- 纸：暖白到米黄，和阅读主题的「羊皮纸」同源 -->
+    <linearGradient id="paper" x1="300" y1="660" x2="560" y2="800" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#fdf8ea"/>
+      <stop offset="1" stop-color="#e6d9bb"/>
+    </linearGradient>
+    <!-- 墨滴：淡紫过渡到蓝，作为唯一高饱和度的「视觉重音」 -->
+    <linearGradient id="ink" x1="512" y1="288" x2="512" y2="638" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#dccbff"/>
+      <stop offset="0.5" stop-color="#b4befe"/>
+      <stop offset="1" stop-color="#7aa2f7"/>
+    </linearGradient>
+    <radialGradient id="stain" cx="0" cy="0" r="1" gradientTransform="translate(512 450) scale(310)" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#89b4fa" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#89b4fa" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="shadow" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#08080e" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#08080e" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <!-- 圆角墨砖 -->
+  <rect width="1024" height="1024" rx="228" fill="url(#tile)"/>
+  <rect width="1024" height="1024" rx="228" fill="url(#glow)"/>
+  <!-- 一圈极淡的内描边，让图标在浅色桌面/浅色标题栏上也有边界 -->
+  <rect x="10" y="10" width="1004" height="1004" rx="220" fill="none" stroke="#cdd6f4" stroke-opacity="0.10" stroke-width="4"/>
+
+  <!-- 墨滴上方的光晕 -->
+  <circle cx="512" cy="450" r="310" fill="url(#stain)"/>
+
+  <!-- 摊开的书：两页纸带落在书脊上，中间留出折痕 -->
+  <path d="M512 782C434 742 324 720 170 734V668C326 656 452 674 512 708Z" fill="url(#paper)"/>
+  <path d="M512 782C590 742 700 720 854 734V668C698 656 572 674 512 708Z" fill="url(#paper)"/>
+  <!-- 书页内沿的阴影：让纸有厚度 -->
+  <path d="M170 734C326 656 452 674 512 708V734C452 700 326 682 170 748Z" fill="#7d6f52" fill-opacity="0.30"/>
+  <path d="M854 734C698 656 572 674 512 708V734C572 700 698 682 854 748Z" fill="#7d6f52" fill-opacity="0.30"/>
+  <!-- 书脊折痕 -->
+  <path d="M512 708V782" stroke="#9c8b66" stroke-opacity="0.55" stroke-width="5" stroke-linecap="round"/>
+
+  <!-- 书的投影 -->
+  <ellipse cx="512" cy="792" rx="330" ry="34" fill="url(#shadow)"/>
+
+  <!-- 墨滴：尖端朝上，正对着书脊的 V 型开口 -->
+  <path d="M512 288C564 386 628 440 628 514C628 586 576 638 512 638C448 638 396 586 396 514C396 440 460 386 512 288Z" fill="url(#ink)"/>
+  <!-- 高光 -->
+  <path d="M468 462C468 440 484 404 500 378C492 426 484 476 490 512C496 544 482 560 470 554C458 548 468 490 468 462Z" fill="#ffffff" fill-opacity="0.42"/>
+</svg>

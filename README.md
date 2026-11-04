@@ -1,9 +1,15 @@
 # 墨读（Modu）
 
+<p align="center">
+  <img src="src/assets/logo.svg" width="112" alt="墨读 logo" />
+</p>
+
 一个为中文长篇小说打磨的桌面 EPUB 阅读器：Tauri 2 + React 19 + TypeScript，Rust 负责解析，WebView 负责排版。
 
 > 前身是 2023 年那版 PyQt5 阅读器（`QTextBrowser` 只能吃 CSS 2.1 子集，中文两端对齐、脚注、图片都很难看）。
 > 这次把渲染换成 Chromium，分页内核使用 [foliate-js](https://github.com/johnfactotum/foliate-js)，阅读体验接近纸书。
+
+**标识**：一滴墨落进摊开的书里——「墨」是内容，「读」是那本书；墨砖底 + 纸色书页 + 淡紫到蓝的墨滴，与深色/羊皮纸主题同源。矢量源在 `src/assets/logo.svg`，图标集由 `pnpm tauri icon src/assets/logo.svg` 生成到 `src-tauri/icons/`。
 
 ## 特性
 
