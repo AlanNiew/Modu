@@ -1,6 +1,12 @@
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { BookOpen, ChevronLeft, Copy, Minus, Square, X } from 'lucide-react'
-import { useEffect, useState, type ReactNode } from 'react'
+import {
+  forwardRef,
+  useEffect,
+  useState,
+  type ButtonHTMLAttributes,
+  type ReactNode,
+} from 'react'
 
 import { cn } from '../lib/cn'
 
@@ -82,35 +88,41 @@ export function TitleBar({
   )
 }
 
-/** 标题栏右侧的小按钮：统一 28×28、hover 底色。 */
-export function TitleBarButton({
-  title,
-  onClick,
-  active,
-  children,
-}: {
-  title: string
-  onClick?: () => void
-  active?: boolean
-  children: ReactNode
-}) {
+/**
+ * 标题栏右侧的小按钮：统一 28×28、hover 底色。
+ *
+ * 必须支持 ref 与透传 props：Radix 的 `Popover.Trigger asChild` 会 clone
+ * 这个按钮，把 onPointerDown/aria-expanded/data-state 等塞进来；如果按钮
+ * 只接收固定几个 props，这些事件会被丢掉，表现为「点排版按钮没反应」。
+ */
+export const TitleBarButton = forwardRef<
+  HTMLButtonElement,
+  ButtonHTMLAttributes<HTMLButtonElement> & {
+    title: string
+    active?: boolean
+    children: ReactNode
+  }
+>(function TitleBarButton({ title, active, children, className, ...rest }, ref) {
   return (
     <button
+      ref={ref}
       type="button"
       title={title}
       aria-label={title}
-      onClick={onClick}
+      {...rest}
       className={cn(
         'flex h-7 w-7 items-center justify-center rounded-md transition',
         active
           ? 'bg-surface0 text-text'
           : 'text-subtext hover:bg-surface0/80 hover:text-text',
+        className,
       )}
     >
       {children}
     </button>
   )
-}
+})
+
 
 function WindowControls() {
   const [maximized, setMaximized] = useState(false)

@@ -13,26 +13,49 @@ interface ShelfPageProps {
 }
 
 /** 卡片最小宽度与间距：列数由容器宽度反算，不写死每行几本。 */
-const MIN_CARD_WIDTH = 164
+const MIN_CARD_WIDTH = 168
 const GAP = 22
-const ROW_HEIGHT = 316
 const COVER_ASPECT = 1.5 // 封面 2:3
-const LABEL_HEIGHT = 74
+const LABEL_HEIGHT = 60 // 书名 + 作者 + 字数三行
+const ROW_GAP = 26
 
-function useColumns(ref: React.RefObject<HTMLDivElement | null>): number {
-  const [columns, setColumns] = useState(4)
+interface GridMetrics {
+  columns: number
+  cardWidth: number
+  rowHeight: number
+}
+
+function fallbackRowHeight(cardWidth: number): number {
+  return Math.round(cardWidth * COVER_ASPECT) + LABEL_HEIGHT + ROW_GAP
+}
+
+/**
+ * 量出书架可用的宽度，再由它推导列数、卡片宽度和行高。
+ *
+ * 行高必须跟卡片宽度绑定：封面是 2:3 的按宽度等比缩放，卡片越宽封面越高；
+ * 之前行高写死 316，窗口一宽封面就顶出格子、把下一行盖住（文字像被吃掉）。
+ */
+function useGridMetrics(ref: React.RefObject<HTMLDivElement | null>): GridMetrics {
+  const [width, setWidth] = useState(0)
+
   useEffect(() => {
     const element = ref.current
     if (!element) return
-    const observer = new ResizeObserver(() => {
-      const width = element.clientWidth
-      const next = Math.max(1, Math.floor((width + GAP) / (MIN_CARD_WIDTH + GAP)))
-      setColumns(next)
-    })
+    const update = () => setWidth(element.clientWidth)
+    update()
+    const observer = new ResizeObserver(update)
     observer.observe(element)
     return () => observer.disconnect()
   }, [ref])
-  return columns
+
+  return useMemo<GridMetrics>(() => {
+    if (width <= 0) {
+      return { columns: 4, cardWidth: MIN_CARD_WIDTH, rowHeight: fallbackRowHeight(MIN_CARD_WIDTH) }
+    }
+    const columns = Math.max(1, Math.floor((width + GAP) / (MIN_CARD_WIDTH + GAP)))
+    const cardWidth = Math.floor((width - GAP * (columns - 1)) / columns)
+    return { columns, cardWidth, rowHeight: fallbackRowHeight(cardWidth) }
+  }, [width])
 }
 
 export function ShelfPage({ onOpenBook }: ShelfPageProps) {
@@ -54,7 +77,7 @@ export function ShelfPage({ onOpenBook }: ShelfPageProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const gridRef = useRef<HTMLDivElement | null>(null)
   const [localQuery, setLocalQuery] = useState(query)
-  const columns = useColumns(gridRef)
+  const { columns, rowHeight } = useGridMetrics(gridRef)
 
   useEffect(() => {
     void load()
@@ -79,16 +102,14 @@ export function ShelfPage({ onOpenBook }: ShelfPageProps) {
   const virtualizer = useVirtualizer({
     count: rows.length,
     getScrollElement: () => scrollRef.current,
-    estimateSize: () => ROW_HEIGHT,
+    estimateSize: () => rowHeight,
     overscan: 3,
   })
 
-  const cardWidth = useMemo(() => {
-    const width = gridRef.current?.clientWidth ?? 0
-    if (width <= 0) return MIN_CARD_WIDTH
-    const totalGap = GAP * (columns - 1)
-    return Math.floor((width - totalGap) / columns)
-  }, [columns, rows.length])
+  // 行高随窗口宽度变化：清掉已测量的高度，否则虚拟列表还用旧值定位。
+  useEffect(() => {
+    virtualizer.measure()
+  }, [rowHeight, columns, virtualizer])
 
   const isEmpty = !loading && books.length === 0 && query.trim() === '' && filter === 'all'
 
@@ -192,14 +213,14 @@ export function ShelfPage({ onOpenBook }: ShelfPageProps) {
                     className="absolute left-0 right-0"
                     style={{
                       top: row.start,
-                      height: ROW_HEIGHT,
+                      height: rowHeight,
                       display: 'grid',
                       gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
                       columnGap: GAP,
                     }}
                   >
                     {rows[row.index].map((book) => (
-                      <div key={book.id} style={{ maxWidth: cardWidth + 16 }}>
+                      <div key={book.id} className="min-w-0">
                         <BookCard
                           book={book}
                           onOpen={onOpenBook}
@@ -278,4 +299,3 @@ function EmptyShelf({ onImport, loading }: { onImport: () => void; loading: bool
   )
 }
 
-export { LABEL_HEIGHT, COVER_ASPECT }
