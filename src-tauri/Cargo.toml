@@ -1,0 +1,61 @@
+[package]
+name = "modu"
+version = "0.1.0"
+description = "墨读 — a comfortable EPUB reader"
+authors = ["alanview"]
+edition = "2024"
+rust-version = "1.90"
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "modu_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-window-state = "2"
+tauri-plugin-log = "2"
+tauri-plugin-single-instance = "2"
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# EPUB 规范只要求 deflate；不启用 bzip2/zstd，避免额外 C 依赖（zstd-sys 在本机 MSVC 下
+# 会触发 cl D8050 调试记录超限）。
+zip = { version = "2", default-features = false, features = ["deflate"] }
+roxmltree = "0.20"
+encoding_rs = "0.8"
+mime_guess = "2"
+percent-encoding = "2"
+
+rusqlite = { version = "0.32", features = ["bundled"] }
+blake3 = "1"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp", "bmp", "tiff"] }
+
+thiserror = "2"
+anyhow = "1"
+parking_lot = "0.12"
+log = "0.4"
+
+[dev-dependencies]
+tempfile = "3"
+
+# MSVC 的 cl.exe 在“超长编译命令 + /Z7”时会报 D8050（命令行放不进调试记录），
+# 这里对 bundled 编译的 C 依赖关掉调试信息；Rust 侧仍保持默认 debug 级别。
+[profile.dev.package.libsqlite3-sys]
+debug = false
+
+# Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true
