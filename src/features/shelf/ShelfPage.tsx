@@ -1,5 +1,5 @@
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { FolderOpen, Keyboard, Library, Search, X } from 'lucide-react'
+import { FolderOpen, Keyboard, Library, RefreshCw, Search, X } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { TitleBar, TitleBarButton } from '../../components/TitleBar'
@@ -12,6 +12,8 @@ interface ShelfPageProps {
   onOpenBook: (book: BookSummary) => void
   /** 打开快捷键帮助面板（由 App 统一持有 Dialog）。 */
   onOpenHelp: () => void
+  /** 检查软件更新（由 App 统一持有更新面板）。 */
+  onCheckUpdate: () => void
 }
 
 /** 卡片最小宽度与间距：列数由容器宽度反算，不写死每行几本。 */
@@ -60,7 +62,7 @@ function useGridMetrics(ref: React.RefObject<HTMLDivElement | null>): GridMetric
   }, [width])
 }
 
-export function ShelfPage({ onOpenBook, onOpenHelp }: ShelfPageProps) {
+export function ShelfPage({ onOpenBook, onOpenHelp, onCheckUpdate }: ShelfPageProps) {
   const books = useLibrary((state) => state.books)
   const loading = useLibrary((state) => state.loading)
   const importing = useLibrary((state) => state.importing)
@@ -135,6 +137,9 @@ export function ShelfPage({ onOpenBook, onOpenHelp }: ShelfPageProps) {
               onClick={() => void importFromDialog()}
             >
               <FolderOpen size={15} />
+            </TitleBarButton>
+            <TitleBarButton title="检查更新" onClick={onCheckUpdate}>
+              <RefreshCw size={15} />
             </TitleBarButton>
             <TitleBarButton title="快捷键与帮助（F1）" onClick={onOpenHelp}>
               <Keyboard size={15} />

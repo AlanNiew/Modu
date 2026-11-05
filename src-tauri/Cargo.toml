@@ -1,6 +1,6 @@
 [package]
 name = "modu"
-version = "0.3.0"
+version = "0.3.1"
 description = "墨读 — a comfortable EPUB reader"
 authors = ["alanview"]
 edition = "2024"
@@ -43,6 +43,8 @@ thiserror = "2"
 anyhow = "1"
 parking_lot = "0.12"
 log = "0.4"
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 
 [dev-dependencies]
 tempfile = "3"
@@ -50,6 +52,10 @@ tempfile = "3"
 # MSVC 的 cl.exe 在“超长编译命令 + /Z7”时会报 D8050（命令行放不进调试记录），
 # 这里对 bundled 编译的 C 依赖关掉调试信息；Rust 侧仍保持默认 debug 级别。
 [profile.dev.package.libsqlite3-sys]
+debug = false
+
+# tauri-plugin-updater 的依赖链会编译 ring 的 C 代码（同样是 cl.exe + /Z7 触发 D8050）。
+[profile.dev.package.ring]
 debug = false
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

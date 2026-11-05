@@ -4,11 +4,18 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import { Loader2 } from 'lucide-react'
 
 import { HelpDialog } from './components/HelpDialog'
+import { UpdateDialog } from './components/UpdateDialog'
 import { WindowResizeHandles } from './components/WindowResizeHandles'
 import { ReaderPage } from './features/reader/ReaderPage'
 import { ShelfPage } from './features/shelf/ShelfPage'
 import { listLibrary, openBook, openFromLibrary } from './lib/ipc'
 import type { BookSummary, OpenedBookInfo } from './lib/types'
+import {
+  UPDATER_AVAILABLE,
+  autoCheckEnabled,
+  checkForUpdates,
+  type AvailableUpdate,
+} from './lib/updater'
 import { applyChromeTheme } from './renderer/theme'
 import { useLibrary } from './store/library'
 import { useReaderSettings } from './store/settings'
@@ -31,6 +38,9 @@ export default function App() {
   const [spikeAuto, setSpikeAuto] = useState(false)
   const [helpOpen, setHelpOpen] = useState(false)
   const [fullscreen, setFullscreen] = useState(false)
+  // 软件更新：启动静默检查到的结果先存着，打开面板时直接展示，避免重复请求。
+  const [updateOpen, setUpdateOpen] = useState(false)
+  const [availableUpdate, setAvailableUpdate] = useState<AvailableUpdate | null>(null)
 
   const importPaths = useLibrary((state) => state.importPaths)
   const theme = useReaderSettings((state) => state.settings.theme)
@@ -94,6 +104,31 @@ export default function App() {
     return () => {
       disposed = true
       unlisten?.()
+    }
+  }, [])
+
+  // 启动时静默检查更新：延迟几秒，避免和书架首屏加载抢带宽。
+  // 开发构建没有签名产物与安装上下文，直接跳过。
+  useEffect(() => {
+    if (!UPDATER_AVAILABLE || !autoCheckEnabled()) return
+    let cancelled = false
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        try {
+          const found = await checkForUpdates()
+          if (!cancelled && found) {
+            setAvailableUpdate(found)
+            setUpdateOpen(true)
+          }
+        } catch (err) {
+          // 更新检查失败不打扰用户：网络问题很常见，等用户手动点「检查更新」再报。
+          console.warn('[updater] 启动检查失败', err)
+        }
+      })()
+    }, 2500)
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
     }
   }, [])
 
@@ -201,10 +236,21 @@ export default function App() {
         <ShelfPage
           onOpenBook={(book) => void handleOpenBook(book)}
           onOpenHelp={() => setHelpOpen(true)}
+          onCheckUpdate={() => setUpdateOpen(true)}
         />
       )}
 
       <HelpDialog open={helpOpen} onOpenChange={setHelpOpen} />
+
+      <UpdateDialog
+        open={updateOpen}
+        onOpenChange={(open) => {
+          setUpdateOpen(open)
+          // 关闭后丢弃启动检查留下的一次性结果，避免下次打开显示旧信息。
+          if (!open) setAvailableUpdate(null)
+        }}
+        initialUpdate={availableUpdate}
+      />
 
       {(openError || opening) && (
         <div className="pointer-events-none absolute bottom-4 left-1/2 z-30 -translate-x-1/2 rounded-lg border border-surface1 bg-mantle px-4 py-2 text-xs text-subtext shadow-xl">

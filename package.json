@@ -1,7 +1,7 @@
 {
   "name": "modu",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.3.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -12,7 +12,8 @@
     "test": "vitest run",
     "lint": "eslint .",
     "bundle:nsis": "tauri build --bundles nsis",
-    "bundle:portable": "pwsh -NoProfile -File scripts/package-portable.ps1"
+    "bundle:portable": "pwsh -NoProfile -File scripts/package-portable.ps1",
+    "release": "pwsh -NoProfile -File scripts/build-release.ps1"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.3.1",
@@ -29,6 +30,8 @@
     "@tauri-apps/plugin-dialog": "^2",
     "@tauri-apps/plugin-log": "^2",
     "@tauri-apps/plugin-opener": "^2",
+    "@tauri-apps/plugin-process": "^2.4.0",
+    "@tauri-apps/plugin-updater": "^2.14.1",
     "@tauri-apps/plugin-window-state": "^2",
     "clsx": "^2.1.1",
     "lucide-react": "^1.67.0",

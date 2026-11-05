@@ -40,4 +40,11 @@ export default tseslint.config(
     files: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
     rules: { '@typescript-eslint/no-explicit-any': 'off' },
   },
+  {
+    // 发布脚本是 Node 环境（不是浏览器），补上它需要的全局变量。
+    files: ['scripts/**/*.mjs'],
+    languageOptions: {
+      globals: { console: 'readonly', process: 'readonly' },
+    },
+  },
 )

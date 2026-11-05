@@ -44,11 +44,21 @@ fn log_plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
             tauri_plugin_log::TargetKind::Stdout,
         ));
     #[cfg(not(debug_assertions))]
-    let builder = builder.target(tauri_plugin_log::Target::new(
-        tauri_plugin_log::TargetKind::LogDir {
-            file_name: Some("modu".into()),
-        },
-    ));
+    let builder = match std::env::var_os("MODU_DATA_DIR") {
+        // 便携模式：日志跟着数据目录走，放在 <MODU_DATA_DIR>/logs/ 下。
+        // 这样便携版不会去写 %LOCALAPPDATA%，U 盘、只读权限、受控环境都能跑。
+        Some(dir) => builder.target(tauri_plugin_log::Target::new(
+            tauri_plugin_log::TargetKind::Folder {
+                path: std::path::PathBuf::from(dir).join("logs"),
+                file_name: Some("modu".into()),
+            },
+        )),
+        None => builder.target(tauri_plugin_log::Target::new(
+            tauri_plugin_log::TargetKind::LogDir {
+                file_name: Some("modu".into()),
+            },
+        )),
+    };
     builder.build()
 }
 
@@ -66,6 +76,10 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_window_state::Builder::default().build())
+        // 自动更新：updater 负责「检查 / 下载 / 验签 / 静默安装」，
+        // process 负责安装完成后 relaunch() 重启到新版本。
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .setup(|app| {
             let state = init_state(app.handle())?;
             app.manage(state);

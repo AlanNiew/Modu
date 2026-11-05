@@ -24,6 +24,8 @@
 > 安装版：点「更多信息 → 仍要运行」；便携版：**先**右键 ZIP → 属性 → 勾选「解除锁定」→ **再**解压（或用 7-Zip 解压），之后双击通常不再提示。
 > 请对照发布页的 SHA-256 校验文件：`certutil -hashfile <文件名> SHA256`。
 
+> 安装版支持**应用内自动更新**（v0.3.1 起）：升级时无需再手动下载安装包。便携版仍需手动替换 `Modu.exe`。
+
 ## 特性
 
 - **书架**：拖拽批量导入、封面/字数/章数、搜索、排序（最近阅读/书名/作者/入库时间）、在读/未读/读完筛选；SQLite + 虚拟滚动，上千本也不卡。
@@ -36,6 +38,7 @@
 - **滚动阅读**：排版面板可切换「翻页 / 滚动」，切换不重开书、位置保持；翻页模式下滚轮、触控板、点击左右两侧都能翻。
 - **快捷键与帮助**：`F1` 打开帮助面板（翻页、书签、批注、视图三组清单），`F11` 全屏，`Ctrl+B/K/D` 侧栏/搜索/加书签。
 - **沉浸模式**：`Esc` 退出，再 `Esc` 回书架。
+- **自动更新**：安装版启动时静默检查新版本，书架标题栏也能手动检查；应用内显示更新说明与下载进度，下载后校验 Ed25519 签名、静默安装并重启，不弹安装向导。签名校验失败立即中止，用户数据（书架/进度/书签/批注）不受影响。
 - **格式容错**：GBK/GB18030 未声明编码的老书、`linear="no"` 的注释页、EPUB3 nav 与 NCX 双目录、大小写不一致的 zip 路径都能读；截断、缺 container、OPF 非法等畸形包会给出明确错误而不是崩溃。
 
 ## 技术栈
@@ -63,7 +66,10 @@ cd src-tauri && cargo test   # Rust 单测（含 DRM/畸形样本/大书基准�
 cd src-tauri && cargo clippy --lib --tests -- -D warnings   # 零告警门禁
 pnpm tauri build --bundles nsis   # 打安装包
 pnpm bundle:portable              # 打便携版 ZIP（需先有 release 构建）
+pwsh scripts/build-release.ps1 -Version 0.3.2   # 发版：签名构建 + latest.json + 便携 ZIP
 ```
+
+> 发版需要 updater 签名密钥（仓库外 `_modu-updater/env.ps1`，见 [自动更新方案](docs/自动更新方案.md)）。密钥或密码丢失后，已发布版本将无法再接受更新包。
 
 > Windows 需要 MSVC Build Tools（Desktop development with C++）与 WebView2 Runtime；`cargo` 编译 `zip`/`SQLite` 时如果撞上 MSVC 的 `D8050` 报错，见 `src-tauri/Cargo.toml` 里的 `[profile.dev.package.libsqlite3-sys]` 处理。
 
@@ -83,6 +89,7 @@ cd src-tauri && cargo test --lib benches -- --nocapture   # 打印性能数字
 - [开发任务书](docs/开发任务书.md)：需求、ADR、架构、里程碑与验收表
 - [交付说明](docs/M0-M2-交付说明.md)：各里程碑交付内容与验证记录
 - [审查与加固方案](docs/M0-M2-审查与加固方案.md)：M0–M2 两轴审查的 19 项问题、修复与 backlog
+- [自动更新方案](docs/自动更新方案.md)：更新链路、签名密钥管理、发版流程与已知限制
 
 ## 性能与已知限制
 
