@@ -34,3 +34,6 @@ _wv2data/
 # Rust / Tauri 构建产物
 src-tauri/target/
 src-tauri/gen/schemas/
+
+# Tauri 构建时生成的 NSIS 脚本副本
+src-tauri/nsis/

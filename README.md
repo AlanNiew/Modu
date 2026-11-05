@@ -17,7 +17,7 @@
 
 | 包 | 适用 | 说明 |
 | --- | --- | --- |
-| `墨读_x.y.z_x64-setup.exe` | 日常使用 | 安装到 `%LOCALAPPDATA%`，有开始菜单入口，可在「应用和功能」卸载 |
+| `墨读_x.y.z_x64-setup.exe` | 日常使用 | 默认装到 `%LOCALAPPDATA%\墨读`（可在向导里改成任意可写目录，如 `D:\Apps\墨读`），有开始菜单入口，可在「应用和功能」卸载，支持自动更新 |
 | `墨读_x.y.z_portable_x64.zip` | U 盘 / 免安装 | 解压即用；双击 `启动（便携模式）.cmd` 把数据放在同目录 `ModuData\` |
 
 > **首次运行可能遇到 Windows SmartScreen 提示「发布者：未知」**——这是未签名的新下载文件的默认行为，不是病毒告警。
@@ -52,7 +52,9 @@
 | 存储 | `rusqlite`（bundled，WAL），书库 / 进度 / 书签 / 批注 / FTS5 全文索引 |
 | 资源通道 | 自定义 `epub://` 协议（Windows 上即 `http://epub.localhost`） |
 
-数据放在用户数据目录下（`modu.db` + `covers/`）；设置 `MODU_DATA_DIR` 可切到便携模式，把数据放到任意目录。
+> 安装时若报「无法打开要写入的文件 …\modu.exe」，先把**安装位置**从 `%LOCALAPPDATA%` 改到 D 盘可写目录（如 `D:\Apps\墨读`）再装——部分安全软件会拦截安装器往 AppData 写 exe。详见[用户手册](docs/用户手册.md)。
+
+数据放在 `%APPDATA%\Modu\`（`modu.db` + `covers/`）；设置 `MODU_DATA_DIR` 可切到便携模式，把数据放到任意目录。
 
 ## 开发
 
