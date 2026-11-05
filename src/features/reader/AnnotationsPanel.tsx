@@ -1,5 +1,5 @@
 import { Highlighter, NotebookPen, PencilLine, Trash2 } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { cn } from '../../lib/cn'
 import type { Annotation, AnnotationColor } from '../../lib/types'
@@ -48,10 +48,18 @@ export function AnnotationsPanel({
   // 正在编辑备注的批注 id；同一时间只编辑一条
   const [editingId, setEditingId] = useState<number | null>(null)
   const [draft, setDraft] = useState('')
+  // 记录已经自动展开过的 activeId：只在「选中了另一条」时展开，
+  // 不能在 annotations 变化（比如刚保存完备注）时又把它重新撑开。
+  const handledActiveRef = useRef<number | null>(null)
 
   // 从正文点划线过来时，自动进入编辑态，省一次点击
   useEffect(() => {
-    if (activeId == null) return
+    if (activeId == null) {
+      handledActiveRef.current = null
+      return
+    }
+    if (handledActiveRef.current === activeId) return
+    handledActiveRef.current = activeId
     const target = annotations.find((item) => item.id === activeId)
     if (!target) return
     setEditingId(activeId)

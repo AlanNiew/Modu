@@ -549,6 +549,8 @@ export function ReaderPage({
       try {
         const updated = await updateAnnotation(annotation.id, note)
         setAnnotations((prev) => prev.map((item) => (item.id === updated.id ? updated : item)))
+        // 保存后收起编辑态；清掉 activeId，面板就不会因为列表刷新再次展开。
+        setActiveAnnotationId((current) => (current === annotation.id ? null : current))
         showToast(note.trim() ? '批注已保存' : '批注已清空')
       } catch (err) {
         console.error('[reader] 保存批注失败', err)
