@@ -13,6 +13,7 @@ import {
   Search,
   Bookmark as BookmarkIcon,
 } from 'lucide-react'
+import { save } from '@tauri-apps/plugin-dialog'
 import { openUrl } from '@tauri-apps/plugin-opener'
 
 import { TitleBar, TitleBarButton } from '../../components/TitleBar'
@@ -21,6 +22,7 @@ import {
   addAnnotation,
   addBookmark,
   closeBook,
+  exportAnnotationsMarkdown,
   getProgress,
   listAnnotations,
   listBookmarks,
@@ -30,6 +32,7 @@ import {
   searchBook,
   setBookmarkNote,
   updateAnnotation,
+  writeTextFile,
 } from '../../lib/ipc'
 import { decodeLocator, encodeLocator } from '../../lib/locator'
 import { coverUrl } from '../../lib/protocol'
@@ -170,6 +173,7 @@ export function ReaderPage({
     fraction: 0,
     page: 1,
     pages: 1,
+    fragment: null,
     excerpt: '',
   })
   const [loadedIndex, setLoadedIndex] = useState<number | null>(null)
@@ -257,7 +261,10 @@ export function ReaderPage({
           const record = await getProgress(libraryId)
           const locator = decodeLocator(record?.locator)
           if (locator && locator.index < spineTotal) {
-            await api.goToChapter(locator.index, locator.fraction)
+            // v2 locator 带文本锚点：先按章/分数跳到附近，再用引文校正回原句。
+            // 锚点失效（书被替换/改排版后找不到原句）时停在章/分数位置，不至于回到开头。
+            const located = await api.goToLocator(locator)
+            if (!located) await api.goToChapter(locator.index, locator.fraction)
           }
         } catch (err) {
           console.error('[reader] 读取进度失败', err)
@@ -296,7 +303,7 @@ export function ReaderPage({
         }
       })()
     },
-    [libraryId, spine, spineTotal],
+    [devSpike, libraryId, spine, spineTotal],
   )
 
   // 进度写回：防抖 700ms，避免每翻一页都打数据库。
@@ -306,7 +313,7 @@ export function ReaderPage({
       const percent = (relocate.index + relocate.fraction) / spineTotal
       void saveProgress(
         libraryId,
-        encodeLocator(relocate.index, relocate.fraction),
+        encodeLocator(relocate.index, relocate.fraction, apiRef.current?.getAnchor?.() ?? null),
         percent,
       ).catch((err) => console.error('[reader] 保存进度失败', err))
     }, 700)
@@ -319,7 +326,7 @@ export function ReaderPage({
       const percent = (relocate.index + relocate.fraction) / spineTotal
       await saveProgress(
         libraryId,
-        encodeLocator(relocate.index, relocate.fraction),
+        encodeLocator(relocate.index, relocate.fraction, apiRef.current?.getAnchor?.() ?? null),
         percent,
       ).catch(() => undefined)
       void useLibrary.getState().load()
@@ -338,12 +345,22 @@ export function ReaderPage({
   // StrictMode 会重复调用 updater，副作用会被执行两次（会多退一次到书架）。
   const immersiveRef = useRef(false)
   immersiveRef.current = immersive
+  // Esc 阶梯要读全屏状态，但不能因为 fullscreen 变化而重绑监听
+  const fullscreenRef = useRef(fullscreen)
+  fullscreenRef.current = fullscreen
+  const onToggleFullscreenRef = useRef(onToggleFullscreen)
+  onToggleFullscreenRef.current = onToggleFullscreen
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return
       // 帮助面板等 Radix 弹层自己也吃 Esc：弹层打开时交给它关，
       // 否则一次 Esc 会「关面板 + 退回书架」两件事一起做。
       if (document.querySelector('[role="dialog"]')) return
+      // Esc 阶梯：全屏 → 沉浸 → 书架（任务书 F-15）
+      if (fullscreenRef.current) {
+        onToggleFullscreenRef.current()
+        return
+      }
       if (immersiveRef.current) {
         setImmersive(false)
         return
@@ -586,6 +603,25 @@ export function ReaderPage({
     await apiRef.current?.revealAnnotation(annotation)
   }, [])
 
+  // 导出批注：Rust 只负责拼 Markdown，落盘位置由系统保存对话框决定
+  //（不开 fs 插件 scope，路径来自用户显式选择）。
+  const handleExportAnnotations = useCallback(async () => {
+    if (libraryId == null) return
+    try {
+      const markdown = await exportAnnotationsMarkdown(libraryId)
+      const path = await save({
+        defaultPath: `${book.package.title} · 批注.md`,
+        filters: [{ name: 'Markdown', extensions: ['md'] }],
+      })
+      if (path === null) return
+      await writeTextFile(path, markdown)
+      showToast('批注已导出')
+    } catch (err) {
+      console.error('[reader] 导出批注失败', err)
+      showToast('导出失败')
+    }
+  }, [book.package.title, libraryId, showToast])
+
   return (
     <div className="flex h-full min-h-0 flex-col bg-base text-text">
       {!immersive && (
@@ -630,6 +666,21 @@ export function ReaderPage({
             </>
           }
         />
+      )}
+
+      {immersive && (
+        <div className="pointer-events-none fixed inset-x-0 bottom-0 z-40">
+          <div className="mx-auto flex max-w-[520px] items-center gap-2 px-4 pb-2 text-[10px] tabular-nums text-overlay0/70">
+            <span className="truncate">{currentChapterLabel}</span>
+            <span className="h-px flex-1 bg-surface0/60">
+              <span
+                className="block h-px bg-blue/70"
+                style={{ width: `${Math.min(100, Math.max(0, progress * 100))}%` }}
+              />
+            </span>
+            <span>{Math.round(progress * 100)}%</span>
+          </div>
+        </div>
       )}
 
       {immersive && (
@@ -716,7 +767,12 @@ export function ReaderPage({
 
             <div className="min-h-0 flex-1 overflow-y-auto">
               {sidebarTab === 'toc' && (
-                <TocTree items={toc} activePath={activePath} onSelect={jumpToToc} />
+                <TocTree
+                  items={toc}
+                  activePath={activePath}
+                  activeFragment={relocate.fragment}
+                  onSelect={jumpToToc}
+                />
               )}
 
               {sidebarTab === 'bookmarks' && (
@@ -737,6 +793,7 @@ export function ReaderPage({
                   onJump={(annotation) => void jumpToAnnotation(annotation)}
                   onRemove={(annotation) => void handleRemoveAnnotation(annotation)}
                   onNote={(annotation, note) => void handleAnnotationNote(annotation, note)}
+                  onExport={() => void handleExportAnnotations()}
                 />
               )}
 

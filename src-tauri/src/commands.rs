@@ -7,8 +7,8 @@ use serde::Serialize;
 use tauri::State;
 
 use crate::library::{
-    self, Annotation, AnnotationInput, Bookmark, BookSummary, ImportOutcome, ListOptions,
-    ProgressRecord,
+    self, Annotation, AnnotationColor, AnnotationInput, Bookmark, BookSummary, ImportOutcome,
+    ListOptions, ProgressRecord,
 };
 use crate::epub::{self, Package};
 use crate::error::{AppError, AppResult};
@@ -74,37 +74,6 @@ pub fn book_section_html(
         .ok_or_else(|| AppError::NotFound(format!("章节不存在: {index}")))?;
     let html = book.read_text(&item.path)?;
     Ok(SectionHtml { html, path: item.path.clone() })
-}
-
-/// 读取任意资源文本（主要给调试与 M0 链路验证用）。
-#[tauri::command]
-pub fn book_read_text(
-    state: State<'_, AppState>,
-    book_id: String,
-    path: String,
-) -> AppResult<String> {
-    let book = state
-        .get_book(&book_id)
-        .ok_or_else(|| AppError::NotFound(format!("书籍未打开: {book_id}")))?;
-    book.read_text(&path)
-}
-
-/// 当前打开的书（会话内），用于 dev 热重载后恢复。
-#[tauri::command]
-pub fn book_list(state: State<'_, AppState>) -> Vec<OpenedBookInfo> {
-    let mut list: Vec<OpenedBookInfo> = state
-        .books
-        .read()
-        .values()
-        .map(|book| OpenedBookInfo {
-            id: book.id.clone(),
-            path: book.path.clone(),
-            package: (*book.package).clone(),
-            library_id: None,
-        })
-        .collect();
-    list.sort_by(|a, b| a.path.cmp(&b.path));
-    list
 }
 
 /// 打开系统文件选择器（Rust 侧弹窗，路径不经过 fs 插件 scope）。
@@ -174,12 +143,6 @@ pub fn library_open(state: State<'_, AppState>, book_id: i64) -> AppResult<Opene
     }
     library::mark_opened(&state.db, book_id)?;
     Ok(info)
-}
-
-/// 书架卡片详情（M1 先用列表数据，这里给后续详情面板留口）。
-#[tauri::command]
-pub fn library_books(state: State<'_, AppState>, book_id: i64) -> AppResult<BookSummary> {
-    library::get(&state.db, book_id)
 }
 
 // ---------------------------------------------------------------------------
@@ -290,9 +253,31 @@ pub fn annotation_update(
     state: State<'_, AppState>,
     annotation_id: i64,
     note: Option<String>,
-    color: Option<String>,
+    color: Option<AnnotationColor>,
 ) -> AppResult<Annotation> {
-    library::annotation_update(&state.db, annotation_id, note.as_deref(), color.as_deref())
+    library::annotation_update(&state.db, annotation_id, note.as_deref(), color)
+}
+
+/// 导出整本书的批注为 Markdown 文本（由前端弹保存对话框后写入）。
+#[tauri::command]
+pub fn annotation_export_markdown(
+    state: State<'_, AppState>,
+    library_id: i64,
+) -> AppResult<String> {
+    library::annotations_markdown(&state.db, library_id)
+}
+
+/// 把用户明确要导出的文本写到指定路径。
+///
+/// 路径来自系统保存对话框（用户的显式选择），所以这里不开 fs 插件权限，
+/// 也不允许前端传任意路径之外的参数——调用方只传一个由对话框返回的字符串。
+#[tauri::command]
+pub fn write_text_file(path: String, contents: String) -> AppResult<()> {
+    if path.trim().is_empty() {
+        return Err(AppError::Validation("保存路径不能为空".into()));
+    }
+    std::fs::write(&path, contents)
+        .map_err(|e| AppError::Io(format!("写入文件失败（{path}）: {e}")))
 }
 
 #[tauri::command]

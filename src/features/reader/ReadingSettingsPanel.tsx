@@ -13,6 +13,11 @@ import {
   type ThemeId,
 } from '../../renderer/theme'
 
+const ALIGN_OPTIONS: Array<{ id: 'justify' | 'left'; label: string }> = [
+  { id: 'justify', label: '两端对齐' },
+  { id: 'left', label: '左对齐' },
+]
+
 const FLOW_OPTIONS: Array<{ id: ReadingFlow; label: string }> = [
   { id: 'paginated', label: '翻页' },
   { id: 'scrolled', label: '滚动' },
@@ -216,6 +221,61 @@ export function ReadingSettingsPanel({
               step={20}
               onChange={(pageWidth) => onPatch({ pageWidth })}
             />
+            <SliderRow
+              label="段后间距"
+              value={Number(settings.paragraphSpacing.toFixed(2))}
+              suffix=" em"
+              min={0}
+              max={1.6}
+              step={0.04}
+              onChange={(paragraphSpacing) => onPatch({ paragraphSpacing })}
+            />
+            <SliderRow
+              label="字间距"
+              value={Number(settings.letterSpacing.toFixed(2))}
+              suffix=" em"
+              min={-0.02}
+              max={0.2}
+              step={0.01}
+              onChange={(letterSpacing) => onPatch({ letterSpacing })}
+            />
+
+            <div className="space-y-2">
+              <div className="text-[11px] text-subtext">正文对齐</div>
+              <div className="grid grid-cols-2 gap-1 rounded-lg bg-surface0/50 p-1">
+                {ALIGN_OPTIONS.map((option) => (
+                  <button
+                    key={option.id}
+                    type="button"
+                    onClick={() => onPatch({ textAlign: option.id })}
+                    className={cn(
+                      'rounded-md py-1.5 text-[11px] transition',
+                      settings.textAlign === option.id
+                        ? 'bg-surface1 text-text'
+                        : 'text-overlay0 hover:text-text',
+                    )}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <label className="flex items-center justify-between text-[11px] text-subtext">
+              <span className="flex flex-col">
+                <span>净版（忽略书内排版）</span>
+                <span className="text-[10px] text-overlay0/70">排版花乱的老书可以打开</span>
+              </span>
+              <Switch.Root
+                checked={!settings.respectPublisherStyles}
+                onCheckedChange={(checked) =>
+                  onPatch({ respectPublisherStyles: !checked })
+                }
+                className="relative h-4 w-8 shrink-0 rounded-full bg-surface1 transition data-[state=checked]:bg-blue"
+              >
+                <Switch.Thumb className="block h-3 w-3 translate-x-0.5 rounded-full bg-text transition-transform data-[state=checked]:translate-x-4" />
+              </Switch.Root>
+            </label>
 
             <label className="flex items-center justify-between border-t border-surface0/70 pt-3 text-[11px] text-subtext">
               <span>段落首行缩进</span>

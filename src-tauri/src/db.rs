@@ -189,7 +189,7 @@ mod tests {
     fn migrates_fresh_database() {
         let dir = temp_dir();
         let db = Db::open(&dir.join("modu.db")).unwrap();
-        let version = db.with(|c| Ok(user_version(c)?)).unwrap();
+        let version = db.with(user_version).unwrap();
         assert_eq!(version, SCHEMA_VERSION);
         let tables: i64 = db
             .with(|c| {
@@ -209,7 +209,7 @@ mod tests {
         let path = dir.join("modu.db");
         drop(Db::open(&path).unwrap());
         let db = Db::open(&path).unwrap();
-        let version = db.with(|c| Ok(user_version(c)?)).unwrap();
+        let version = db.with(user_version).unwrap();
         assert_eq!(version, SCHEMA_VERSION);
     }
 }

@@ -32,6 +32,14 @@ export interface ReadingSettings {
   pageWidth: number
   /** 分页还是滚动阅读 */
   flow: ReadingFlow
+  /** 正文对齐：中文默认两端对齐，也可左对齐（混合排版时更自然） */
+  textAlign: 'justify' | 'left'
+  /** 段后间距，单位 em */
+  paragraphSpacing: number
+  /** 字间距，单位 em（0 = 不加） */
+  letterSpacing: number
+  /** 是否保留出版方（书内）样式；false = 净版，只按本应用的排版渲染 */
+  respectPublisherStyles: boolean
 }
 
 export interface ReadingTheme {
@@ -224,6 +232,10 @@ export const DEFAULT_READING_SETTINGS: ReadingSettings = {
   lineHeight: 1.85,
   paragraphIndent: 2,
   pageWidth: 720,
+  textAlign: 'justify',
+  paragraphSpacing: 0.72,
+  letterSpacing: 0,
+  respectPublisherStyles: true,
   flow: 'paginated',
 }
 
@@ -309,11 +321,13 @@ body {
   font-family: ${settings.fontFamily} !important;
   font-size: ${settings.fontSize}px !important;
   line-height: ${settings.lineHeight} !important;
-  /* 中文正文一律两端对齐：不开放开关，少一个容易调坏的选项 */
-  text-align: justify !important;
-  hanging-punctuation: allow-end;
-  hyphens: none !important;
-  -webkit-hyphens: none !important;
+  text-align: ${settings.textAlign} !important;
+  /* 西文断词交给浏览器；中文不受 hyphens 影响 */
+  hyphens: auto !important;
+  -webkit-hyphens: auto !important;
+  /* 中文换行按严格规则，避免标点跑到行首 */
+  line-break: strict;
+  letter-spacing: ${settings.letterSpacing === 0 ? 'normal' : `${settings.letterSpacing}em`};
   overflow-wrap: break-word !important;
   word-break: normal !important;
   text-rendering: optimizeLegibility;
@@ -328,7 +342,7 @@ p, li, dd, dt, blockquote, td, th, figcaption {
 }
 
 p {
-  margin: 0 0 0.72em !important;
+  margin: 0 0 ${settings.paragraphSpacing}em !important;
   text-indent: ${indent} !important;
 }
 
@@ -443,5 +457,32 @@ html, body, section, article, div {
   break-inside: auto;
 }
 @page { margin: 0; }
+${settings.respectPublisherStyles
+  ? ''
+  : `
+/* 净版（respectPublisherStyles = false）：屏蔽出版方样式对版式的影响。
+   普通模式仍然尊重书内 CSS；净版只保留本应用的排版，适合排版很花的老书。 */
+body, body * {
+  font-family: ${settings.fontFamily} !important;
+  color: ${theme.foreground} !important;
+  background: transparent !important;
+  text-align: ${settings.textAlign} !important;
+  float: none !important;
+  position: static !important;
+  width: auto !important;
+  max-width: 100% !important;
+  margin-left: 0 !important;
+  margin-right: 0 !important;
+  padding-left: 0 !important;
+  padding-right: 0 !important;
+  border: none !important;
+}
+p { text-indent: ${indent} !important; }
+h1 { font-size: 1.5em !important; }
+h2 { font-size: 1.25em !important; }
+h3 { font-size: 1.1em !important; }
+h1, h2, h3, h4, h5, h6 { font-weight: 600 !important; }
+img, svg, video { max-width: 100% !important; height: auto !important; }
+`}
 `
 }

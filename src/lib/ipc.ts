@@ -117,3 +117,11 @@ export const updateAnnotation = (
 
 export const removeAnnotation = (annotationId: number) =>
   invoke<void>('annotation_remove', { annotationId })
+
+/** 整本书的批注导出为 Markdown 文本（落盘由系统保存对话框决定）。 */
+export const exportAnnotationsMarkdown = (libraryId: number) =>
+  invoke<string>('annotation_export_markdown', { libraryId })
+
+/** 写文本文件；路径来自用户显式选择的保存对话框。 */
+export const writeTextFile = (path: string, contents: string) =>
+  invoke<void>('write_text_file', { path, contents })

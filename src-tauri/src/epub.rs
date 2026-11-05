@@ -19,10 +19,15 @@ use zip::ZipArchive;
 use crate::error::{AppError, AppResult};
 
 const CONTAINER_XML: &str = "META-INF/container.xml";
+const ENCRYPTION_XML: &str = "META-INF/encryption.xml";
 const OPF_NS: &str = "http://www.idpf.org/2007/opf";
 const XHTML_NS: &str = "http://www.w3.org/1999/xhtml";
 const OPS_NS: &str = "http://www.idpf.org/2007/ops";
 const DC_NS: &str = "http://purl.org/dc/elements/1.1/";
+
+/// 单个 zip 条目解压上限。zip 头里的 `size` 由文件作者控制，
+/// 不设上限时一个几十 KB 的恶意 EPUB 就能让进程申请几个 GB。
+const MAX_ENTRY_BYTES: u64 = 64 * 1024 * 1024;
 
 /// 一本书在内存中的只读视图；zip 句柄单独加锁以便并发读取条目。
 pub struct OpenedBook {
@@ -38,6 +43,13 @@ impl OpenedBook {
         let name = resolve_entry_name(&mut archive, entry_path)
             .ok_or_else(|| AppError::EntryMissing(entry_path.to_string()))?;
         let mut file = archive.by_name(&name)?;
+        if file.size() > MAX_ENTRY_BYTES {
+            return Err(AppError::Unsupported(format!(
+                "条目过大（{:.1} MB，上限 {} MB）: {name}",
+                file.size() as f64 / 1_048_576.0,
+                MAX_ENTRY_BYTES / 1_048_576,
+            )));
+        }
         let mut buf = Vec::with_capacity(file.size() as usize);
         file.read_to_end(&mut buf)?;
         Ok(buf)
@@ -96,7 +108,6 @@ pub struct TocItem {
 
 #[derive(Debug, Clone)]
 struct ManifestItem {
-    id: String,
     path: String,
     media_type: String,
     properties: String,
@@ -109,8 +120,16 @@ pub fn open(path: &str) -> AppResult<OpenedBook> {
     }
     let file = File::open(file_path)?;
     let mut archive = ZipArchive::new(file)?;
+    reject_drm_books(&mut archive)?;
 
-    let container = read_zip_text(&mut archive, CONTAINER_XML)?;
+    let container = read_zip_text(&mut archive, CONTAINER_XML).map_err(|err| match err {
+        AppError::EntryMissing(_) => AppError::InvalidEpub(
+            "这不是有效的 EPUB：压缩包里没有 META-INF/container.xml。\
+             请确认文件完整，且不是把普通 zip/rar 改成了 .epub 后缀"
+                .into(),
+        ),
+        other => other,
+    })?;
     let container_doc = roxmltree::Document::parse(&container)?;
     let opf_path = container_doc
         .descendants()
@@ -161,11 +180,10 @@ pub fn open(path: &str) -> AppResult<OpenedBook> {
                 (Some(DC_NS), "identifier") if identifier.is_none() => {
                     identifier = child.text().map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
                 }
-                (_, "meta") => {
-                    if child.attribute("name") == Some("cover") {
+                (_, "meta")
+                    if child.attribute("name") == Some("cover") => {
                         meta_cover_id = child.attribute("content").map(|s| s.to_string());
                     }
-                }
                 _ => {}
             }
         }
@@ -187,7 +205,7 @@ pub fn open(path: &str) -> AppResult<OpenedBook> {
             }
             manifest.insert(
                 id.to_string(),
-                ManifestItem { id: id.to_string(), path, media_type, properties },
+                ManifestItem { path, media_type, properties },
             );
         }
     }
@@ -246,13 +264,10 @@ pub fn open(path: &str) -> AppResult<OpenedBook> {
     if let Some(nav_item) = manifest
         .values()
         .find(|i| i.properties.split_whitespace().any(|p| p == "nav"))
-    {
-        if let Ok(text) = read_zip_text(&mut archive, &nav_item.path) {
-            if let Ok(nav_doc) = roxmltree::Document::parse(&text) {
+        && let Ok(text) = read_zip_text(&mut archive, &nav_item.path)
+            && let Ok(nav_doc) = roxmltree::Document::parse(&text) {
                 toc = parse_nav(&nav_doc, &parent_dir(&nav_item.path));
             }
-        }
-    }
     if toc.is_empty() {
         let ncx_path = spine_toc_id
             .as_ref()
@@ -264,17 +279,27 @@ pub fn open(path: &str) -> AppResult<OpenedBook> {
                     .find(|i| i.media_type == "application/x-dtbncx+xml")
                     .map(|i| i.path.clone())
             });
-        if let Some(ncx_path) = ncx_path {
-            if let Ok(text) = read_zip_text(&mut archive, &ncx_path) {
-                if let Ok(ncx_doc) = roxmltree::Document::parse(&text) {
+        if let Some(ncx_path) = ncx_path
+            && let Ok(text) = read_zip_text(&mut archive, &ncx_path)
+                && let Ok(ncx_doc) = roxmltree::Document::parse(&text) {
                     toc = parse_ncx(&ncx_doc, &parent_dir(&ncx_path));
                 }
-            }
-        }
     }
 
+    // F-03：元数据没有 dc:title 时回退到文件名主干（不是写死「未命名」，
+    // 否则书架上会出现一排同名书）。
+    let title = if title.is_empty() {
+        Path::new(path)
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().trim().to_string())
+            .filter(|stem| !stem.is_empty())
+            .unwrap_or_else(|| "未命名".to_string())
+    } else {
+        title
+    };
+
     let package = Package {
-        title: if title.is_empty() { "未命名".to_string() } else { title },
+        title,
         authors,
         language,
         publisher,
@@ -297,11 +322,10 @@ fn book_id(path: &str, package: &Package) -> String {
     hasher.update(path.as_bytes());
     if let Ok(meta) = std::fs::metadata(path) {
         hasher.update(&meta.len().to_le_bytes());
-        if let Ok(modified) = meta.modified() {
-            if let Ok(dur) = modified.duration_since(std::time::UNIX_EPOCH) {
+        if let Ok(modified) = meta.modified()
+            && let Ok(dur) = modified.duration_since(std::time::UNIX_EPOCH) {
                 hasher.update(&dur.as_millis().to_le_bytes());
             }
-        }
     }
     hasher.update(package.opf_path.as_bytes());
     hasher.finalize().to_hex()[..16].to_string()
@@ -311,9 +335,56 @@ fn read_zip_text(archive: &mut ZipArchive<File>, path: &str) -> AppResult<String
     let name = resolve_entry_name(archive, path)
         .ok_or_else(|| AppError::EntryMissing(path.to_string()))?;
     let mut file = archive.by_name(&name)?;
+    if file.size() > MAX_ENTRY_BYTES {
+        return Err(AppError::Unsupported(format!(
+            "条目过大（{:.1} MB）: {name}",
+            file.size() as f64 / 1_048_576.0,
+        )));
+    }
     let mut buf = Vec::with_capacity(file.size() as usize);
     file.read_to_end(&mut buf)?;
     Ok(decode_text(&buf))
+}
+
+/// 有 `META-INF/encryption.xml` 但不一定都是 DRM：合法书常用它做「字体混淆」。
+/// 只有正文（xhtml/html/opf/ncx）被加密时才判定为 DRM 书并给出明确提示；
+/// 仅字体/CSS 加密时放行（字体加载失败不影响阅读，用户能看到正文）。
+fn reject_drm_books(archive: &mut ZipArchive<File>) -> AppResult<()> {
+    let Some(name) = resolve_entry_name(archive, ENCRYPTION_XML) else {
+        return Ok(());
+    };
+    let Ok(mut file) = archive.by_name(&name) else {
+        return Ok(());
+    };
+    if file.size() > 4 * 1024 * 1024 {
+        return Ok(());
+    }
+    let mut buf = Vec::new();
+    file.read_to_end(&mut buf)?;
+    let xml = decode_text(&buf);
+    let doc = match roxmltree::Document::parse(&xml) {
+        Ok(doc) => doc,
+        // encryption.xml 自己坏了，不该拦住整本书。
+        Err(_) => return Ok(()),
+    };
+    let is_content = |uri: &str| {
+        let path = percent_decode(uri);
+        let lower = path.to_ascii_lowercase();
+        [".xhtml", ".html", ".htm", ".opf", ".ncx"]
+            .iter()
+            .any(|ext| lower.ends_with(ext))
+    };
+    let encrypted_content = doc
+        .descendants()
+        .filter(|n| n.has_tag_name("CipherReference"))
+        .filter_map(|n| n.attribute("URI"))
+        .any(is_content);
+    if encrypted_content {
+        return Err(AppError::Unsupported(
+            "这本书的正文带有 DRM 加密（encryption.xml），墨读目前无法解密".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// zip 条目名区分大小写，但现实里不少书的 OPF/manifest 与 zip 内大小写不一致。
@@ -343,14 +414,12 @@ pub fn decode_text(bytes: &[u8]) -> String {
         return text.into_owned();
     }
 
-    if let Some(label) = sniff_encoding(bytes) {
-        if let Some(enc) = encoding_rs::Encoding::for_label(label.as_bytes()) {
-            if enc != encoding_rs::UTF_8 {
+    if let Some(label) = sniff_encoding(bytes)
+        && let Some(enc) = encoding_rs::Encoding::for_label(label.as_bytes())
+            && enc != encoding_rs::UTF_8 {
                 let (text, _, _) = enc.decode(bytes);
                 return text.into_owned();
             }
-        }
-    }
     // 没声明编码时：合法 UTF-8 直接用；否则按 GB18030 兜底（GBK 超集，
     // 覆盖大量不做声明的中文老书）。Big5 等其它中文编码通常会带 charset 声明，
     // 由上面的 sniff_encoding 分支处理。
@@ -403,9 +472,7 @@ pub fn resolve_href(base_dir: &str, href: &str) -> String {
         None => href,
     };
     let decoded = percent_decode(no_query);
-    if decoded.starts_with('/') {
-        normalize_path(&decoded)
-    } else if base_dir.is_empty() {
+    if decoded.starts_with('/') || base_dir.is_empty() {
         normalize_path(&decoded)
     } else {
         normalize_path(&format!("{base_dir}/{decoded}"))
@@ -472,8 +539,8 @@ fn collect_nav_list(list: roxmltree::Node, base_dir: &str, depth: u32, out: &mut
             .or(span)
             .map(|n| n.text().unwrap_or_default().trim().to_string())
             .unwrap_or_default();
-        if let Some(a) = link {
-            if let Some(href) = a.attribute("href") {
+        if let Some(a) = link
+            && let Some(href) = a.attribute("href") {
                 let path = resolve_href(base_dir, href);
                 out.push(TocItem {
                     label,
@@ -483,16 +550,14 @@ fn collect_nav_list(list: roxmltree::Node, base_dir: &str, depth: u32, out: &mut
                     depth,
                 });
             }
-        }
         if let Some(sub) = li.children().find(|n| n.has_tag_name((XHTML_NS, "ol"))) {
             collect_nav_list(sub, base_dir, depth + 1, out);
         }
         // 个别书把嵌套 ol 放进了 a 里面
-        if let Some(a) = link {
-            if let Some(sub) = a.children().find(|n| n.has_tag_name((XHTML_NS, "ol"))) {
+        if let Some(a) = link
+            && let Some(sub) = a.children().find(|n| n.has_tag_name((XHTML_NS, "ol"))) {
                 collect_nav_list(sub, base_dir, depth + 1, out);
             }
-        }
     }
 }
 
@@ -583,6 +648,68 @@ mod tests {
 
     /// 畸形样本：必须返回 Err 而不是 panic / 展开成功。
     /// 样本由 `scripts/gen_fixtures.py` 生成，缺失时跳过（CI 里先跑生成脚本）。
+    /// 构造一本正文被加密的最小 EPUB，用来验证 DRM 拒收路径。
+    fn encrypted_epub(path: &std::path::Path) {
+        use std::io::Write as _;
+        let file = std::fs::File::create(path).expect("建加密测试 epub");
+        let mut zip = zip::ZipWriter::new(file);
+        let stored: zip::write::FileOptions<'_, ()> =
+            zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        zip.start_file("mimetype", stored).unwrap();
+        zip.write_all(b"application/epub+zip").unwrap();
+        let deflated: zip::write::FileOptions<'_, ()> =
+            zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+        zip.start_file("META-INF/container.xml", deflated).unwrap();
+        zip.write_all(
+            br#"<?xml version="1.0"?><container version="1.0"
+              xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles>
+              <rootfile full-path="OEBPS/content.opf"
+                        media-type="application/oebps-package+xml"/></rootfiles></container>"#,
+        )
+        .unwrap();
+        zip.start_file("OEBPS/content.opf", deflated).unwrap();
+        zip.write_all(
+            r#"<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" version="3.0">
+              <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+              <dc:title>DRM 测试</dc:title></metadata>
+              <manifest><item id="c1" href="Text/c1.xhtml"
+                        media-type="application/xhtml+xml"/></manifest>
+              <spine><itemref idref="c1"/></spine></package>"#
+                .as_bytes(),
+        )
+        .unwrap();
+        zip.start_file("OEBPS/Text/c1.xhtml", deflated).unwrap();
+        zip.write_all(br#"<html xmlns="http://www.w3.org/1999/xhtml"><body><p>x</p></body></html>"#)
+            .unwrap();
+        zip.start_file("META-INF/encryption.xml", deflated).unwrap();
+        zip.write_all(
+            br#"<?xml version="1.0"?><encryption
+              xmlns="urn:oasis:names:tc:opendocument:xmlns:container"
+              xmlns:enc="http://www.w3.org/2001/04/xmlenc#"><enc:EncryptedData>
+              <enc:CipherData><enc:CipherReference URI="OEBPS/Text/c1.xhtml"/>
+              </enc:CipherData></enc:EncryptedData></encryption>"#,
+        )
+        .unwrap();
+        zip.finish().unwrap();
+    }
+
+    /// F-18：正文被 DRM 加密的书要给出明确提示，而不是「条目不存在」。
+    #[test]
+    fn rejects_encrypted_body() {
+        let dir = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join("test-tmp")
+            .join(format!("drm-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let epub = dir.join("drm.epub");
+        encrypted_epub(&epub);
+        let err = open(epub.to_str().unwrap()).err().expect("DRM 书应被拒绝");
+        let message = err.to_string();
+        assert!(message.contains("DRM"), "message = {message}");
+        assert!(message.contains("无法解密"), "message = {message}");
+    }
+
     #[test]
     fn rejects_malformed_epubs() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.books");

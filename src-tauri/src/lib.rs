@@ -79,15 +79,12 @@ pub fn run() {
             commands::book_open,
             commands::book_close,
             commands::book_section_html,
-            commands::book_read_text,
-            commands::book_list,
             commands::pick_epub,
             commands::pick_epubs,
             commands::library_import,
             commands::library_list,
             commands::library_remove,
             commands::library_open,
-            commands::library_books,
             commands::progress_get,
             commands::progress_save,
             commands::bookmark_add,
@@ -99,6 +96,8 @@ pub fn run() {
             commands::annotation_list,
             commands::annotation_update,
             commands::annotation_remove,
+            commands::annotation_export_markdown,
+            commands::write_text_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -23,10 +23,11 @@ interface SettingsState {
 }
 
 /**
- * v1 → v2 迁移：
- * - 去掉 `justify`（中文正文一律两端对齐）与 `pagePadding`（由版心宽度推导）
- * - 主题升级为支持 `auto`（跟随系统）
- * - 旧的三套主题 id 全部保留，所以只需要丢弃废字段
+ * 设置迁移（逐级向上兼容）：
+ * - v1 → v2：去掉 `justify` 与 `pagePadding`（对齐改由 textAlign 控制，页边距由版心推导），
+ *   主题升级为支持 `auto`
+ * - v2 → v3：新增 `textAlign` / `paragraphSpacing` / `letterSpacing` / `respectPublisherStyles`，
+ *   缺字段由 DEFAULT_READING_SETTINGS 补齐，旧数据无需改写
  */
 interface PersistedV1 {
   settings?: Partial<ReadingSettings> & { justify?: boolean; pagePadding?: number }
@@ -50,7 +51,7 @@ export const useReaderSettings = create<SettingsState>()(
     }),
     {
       name: 'modu:reader-settings',
-      version: 2,
+      version: 3,
       // 只持久化 settings，避免把函数写进 localStorage
       partialize: (state) => ({ settings: state.settings }),
       migrate: (persisted) => migrate(persisted),

@@ -37,7 +37,7 @@ describe('reader settings store', () => {
     expect(raw).toBeTruthy()
     const saved = JSON.parse(raw as string)
     // v2 起 settings 里新增了 flow/theme=auto；版本号与 store 里的 version 保持一致
-    expect(saved.version).toBe(2)
+    expect(saved.version).toBe(3)
     expect(saved.state.settings.fontSize).toBe(28)
     expect(saved.state.settings.flow).toBe('paginated')
   })

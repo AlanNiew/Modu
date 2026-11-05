@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef } from 'react'
 import './vendor/foliate/view.js'
 import type { FoliateRelocateDetail, FoliateView } from './vendor/foliate/view.js'
 import type { Annotation, AnnotationDraft, OpenedBookInfo } from '../lib/types'
+import type { LocatorAnchor, ReaderLocator } from '../lib/locator'
 import { createFoliateBook, type FoliateBook } from './foliateBook'
 import { buildReadingCss, type ReadingSettings } from './theme'
 
@@ -21,6 +22,10 @@ export interface ReaderApi {
   revealAnnotation(annotation: Annotation): Promise<boolean>
   /** 仅供 dev 自检：向当前章节文档派发一次滚轮事件，返回是否派发成功 */
   dispatchWheel(deltaY: number): boolean
+  /** 当前阅读位置的文本锚点（引文 + 前后文），随进度一起存 */
+  getAnchor(): LocatorAnchor | null
+  /** 按 Locator 恢复位置：先按章/分数跳，再用文本锚点校正（找不到返回 false） */
+  goToLocator(locator: ReaderLocator): Promise<boolean>
 }
 
 export interface RelocateState {
@@ -31,6 +36,8 @@ export interface RelocateState {
   page: number
   /** 本章总页数 */
   pages: number
+  /** 当前页起点所在元素的 id（脚注/小节锚点），用于目录高亮精确到小节 */
+  fragment: string | null
   /** 当前可见文本开头，供书签/搜索预览 */
   excerpt: string
 }
@@ -65,6 +72,8 @@ export function ReaderView({
 }: ReaderViewProps) {
   const hostRef = useRef<HTMLDivElement>(null)
   const viewRef = useRef<FoliateView | null>(null)
+  // 最近一次阅读位置：重排（字号/行高/版心变化）后要用它把读者放回原处
+  const lastPositionRef = useRef<{ index: number; fraction: number } | null>(null)
   const settingsRef = useRef(settings)
   const annotationsRef = useRef<Annotation[]>(annotations ?? [])
   const docRef = useRef<Document | null>(null)
@@ -125,6 +134,8 @@ export function ReaderView({
       Promise.resolve(
         view.renderer?.goTo({ index, anchor: fraction }) ?? view.goTo({ index }),
       )
+    // foliate 把章节文档藏在 closed shadow root 的 iframe 里，只有这一个入口能拿到。
+    const currentDoc = (): Document | null => view.renderer?.getContents?.()[0]?.doc ?? null
 
     const api: ReaderApi = {
       goTo: (target) => Promise.resolve(view.goTo(target)),
@@ -133,13 +144,12 @@ export function ReaderView({
       prev: () => Promise.resolve(view.prev()),
       goToFraction: (fraction) => Promise.resolve(view.goToFraction(fraction)),
       getVisibleText: (maxLength = 120) => {
-        const contents = view.renderer?.getContents?.() ?? []
-        const doc = contents[0]?.doc
+        const doc = currentDoc()
         if (!doc) return ''
         return (doc.body?.innerText ?? '').replace(/\s+/g, ' ').trim().slice(0, maxLength)
       },
       revealAnnotation: async (annotation) => {
-        let index = 0
+        let index: number
         try {
           index = Number((JSON.parse(annotation.locator) as { index?: number }).index ?? 0)
         } catch {
@@ -161,17 +171,40 @@ export function ReaderView({
         if (!range) return false
         await view.renderer?.scrollToAnchor?.(range)
         await new Promise((resolve) => window.setTimeout(resolve, 220))
-        const after = view.renderer?.getContents?.()[0]?.doc
+        const after = currentDoc()
         renderAnnotationsRef.current?.(after ?? doc)
         return true
       },
       dispatchWheel: (deltaY) => {
-        const doc = view.renderer?.getContents?.()[0]?.doc
+        const doc = currentDoc()
         const target = (doc?.body ?? doc?.documentElement) as EventTarget | undefined
         if (!target) return false
         target.dispatchEvent(
           new WheelEvent('wheel', { deltaY, bubbles: true, cancelable: true }),
         )
+        return true
+      },
+      getAnchor: () => lastAnchor,
+      goToLocator: async (locator) => {
+        await goToChapter(locator.index, locator.fraction)
+        if (!locator.quote) return false
+        const doc = await waitForChapterDoc(view, locator.index)
+        if (!doc) return false
+        const docIndex = buildDocIndex(doc)
+        if (!docIndex) return false
+        const range = locateQuote(
+          doc,
+          docIndex,
+          locator.quote,
+          locator.prefix ?? null,
+          locator.suffix ?? null,
+          0,
+        )
+        if (!range) return false
+        await view.renderer?.scrollToAnchor?.(range)
+        await new Promise((resolve) => window.setTimeout(resolve, 220))
+        const after = currentDoc()
+        renderAnnotationsRef.current?.(after ?? doc)
         return true
       },
       revealText: async (index, quote) => {
@@ -187,7 +220,7 @@ export function ReaderView({
           }
           await new Promise((resolve) => window.setTimeout(resolve, 100))
         }
-        const target = doc ?? view.renderer?.getContents?.()[0]?.doc
+        const target = doc ?? currentDoc()
         if (!target) return false
         const range = findQuoteRange(target, quote)
         if (!range) return false
@@ -196,7 +229,7 @@ export function ReaderView({
         // 翻页后 paginator 可能重建/重新排版文档，Range 会失效；
         // 重新取当前文档、重新定位后再上高亮。
         await new Promise((resolve) => window.setTimeout(resolve, 220))
-        const after = view.renderer?.getContents?.()[0]?.doc
+        const after = currentDoc()
         const finalRange =
           after && after !== target ? (findQuoteRange(after, quote) ?? range) : range
         markQuote(after && after !== target ? after : target, finalRange)
@@ -208,6 +241,22 @@ export function ReaderView({
     // 批注：正文渲染色块、选区工具条、点击命中
     // ------------------------------------------------------------------
     let lastRelocate = { index: 0, fraction: 0 }
+    // 当前位置的文本锚点：进度恢复时用它把位置从「页分数」校正回原句。
+    let lastAnchor: LocatorAnchor | null = null
+    const captureAnchor = (doc: Document, range: Range | undefined) => {
+      if (!range) return
+      const docIndex = buildDocIndex(doc)
+      if (!docIndex) return
+      const start = rawOffset(docIndex, range.startContainer, range.startOffset)
+      const end = rawOffset(docIndex, range.endContainer, range.endOffset)
+      if (start == null || end == null || end <= start) return
+      const flat = docIndex.flat
+      lastAnchor = {
+        quote: flat.slice(start, Math.min(flat.length, start + 60)).trim(),
+        prefix: flat.slice(Math.max(0, start - 32), start).trim() || undefined,
+        suffix: flat.slice(end, Math.min(flat.length, end + 32)).trim() || undefined,
+      }
+    }
     let annoRanges = new Map<number, { startRaw: number; endRaw: number }>()
     let lastRenderedDoc: Document | null = null
     let toolbar: HTMLDivElement | null = null
@@ -509,16 +558,23 @@ export function ReaderView({
             index: Number(detail.index ?? 0),
             fraction: Number(detail.fraction ?? 0),
           }
+          lastPositionRef.current = {
+            index: lastRelocate.index,
+            fraction: lastRelocate.fraction,
+          }
+          const anchorDoc = currentDoc()
+          if (anchorDoc && range) captureAnchor(anchorDoc, range)
           callbacksRef.current.onRelocate?.({
             index: lastRelocate.index,
             fraction: lastRelocate.fraction,
             page: Number(renderer.page ?? 1),
             pages: Number(renderer.pages ?? 1),
+            fragment: rangeFragment(range),
             excerpt: (range?.toString() ?? '').replace(/\s+/g, ' ').trim().slice(0, 120),
           })
           // 换章后按新的章节 path 重新画批注（同章翻页不重复走文本树）
-          const currentDoc = renderer.getContents?.()[0]?.doc
-          if (currentDoc && currentDoc !== lastRenderedDoc) renderAnnotations(currentDoc)
+          const docNow = currentDoc()
+          if (docNow && docNow !== lastRenderedDoc) renderAnnotations(docNow)
         }) as EventListener)
 
         // 左右两侧点按翻页（foliate 本身只处理链接点击）。
@@ -586,12 +642,24 @@ export function ReaderView({
       view.remove()
       viewRef.current = null
     }
-  }, [book.id, applySettings])
+  }, [book, applySettings])
 
-  // 阅读设置变化：重新注入 CSS 并重排
+  // 阅读设置变化：重新注入 CSS 并重排。
+  // 拖动滑杆会连续触发 settings，重排本身很贵（要重新分页），
+  // 因此做 100ms 防抖；重排后按最近位置复位，避免「一调字号就被扔回章首」。
   useEffect(() => {
     const view = viewRef.current
-    if (view?.renderer) applySettings(view, settings)
+    if (!view?.renderer) return
+    const timer = window.setTimeout(() => {
+      const position = lastPositionRef.current
+      applySettings(view, settings)
+      if (position) {
+        void Promise.resolve(
+          view.renderer?.goTo?.({ index: position.index, anchor: position.fraction }),
+        ).catch(() => undefined)
+      }
+    }, 100)
+    return () => window.clearTimeout(timer)
   }, [settings, applySettings])
 
   // 批注增删改后重画当前章节（不用重建阅读器）
@@ -696,6 +764,19 @@ interface DocIndex {
   map: number[]
   /** 压缩空白后的全文 */
   flat: string
+}
+
+/**
+ * 当前页起点所在的锚点 id。
+ * 目录里同一章可能挂多个 fragment（小节/脚注），靠它把高亮精确到小节；
+ * 找不到时返回 null，调用方回退到「本章第一个目录项」。
+ */
+function rangeFragment(range: Range | undefined | null): string | null {
+  if (!range) return null
+  let node: Node | null = range.startContainer
+  if (node && node.nodeType !== Node.ELEMENT_NODE) node = node.parentElement
+  const el = node as Element | null
+  return el?.closest('[id]')?.id || null
 }
 
 function normalizeQuote(text: string): string {

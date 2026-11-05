@@ -10,7 +10,26 @@
 import { dirname, isExternalHref, normalizePath, resolveHref, resolveFromRoot } from '../lib/path'
 import { resourceUrl } from '../lib/protocol'
 
-const DROP_TAGS = ['script', 'base', 'iframe', 'object', 'embed', 'noscript']
+// 直接丢弃的标签：
+// - script / iframe / object / embed / noscript：可执行或可加载外部内容
+// - base：会改写相对链接与 fragment，直接破坏脚注锚点
+// - form / input / button / select / textarea：阅读器里没有提交语义，留着只会出现死控件
+// - meta：书内的 refresh / http-equiv 一律不生效（charset 由我们统一补）
+const DROP_TAGS = [
+  'script',
+  'base',
+  'iframe',
+  'object',
+  'embed',
+  'noscript',
+  'form',
+  'input',
+  'button',
+  'select',
+  'textarea',
+  'meta',
+]
+
 
 const SRCSET_TAGS = new Set(['IMG', 'SOURCE'])
 const URL_ATTRS: Record<string, string[]> = {
@@ -32,8 +51,29 @@ export function rewriteSectionHtml(html: string, sectionPath: string, bookId: st
 
   const make = (value: string | null): string | null => {
     if (value == null) return null
-    const abs = absolutize(value, sectionPath, bookId)
-    return abs
+    const lower = value.trim().toLowerCase()
+    if (lower.startsWith('javascript:') || lower.startsWith('vbscript:')) return null
+    // data: 只放行图片（书内偶有内联小图），其余 data: 一律不加载
+    if (lower.startsWith('data:') && !lower.startsWith('data:image/')) return null
+    return absolutize(value, sectionPath, bookId)
+  }
+
+  // 净化：去掉所有 on* 事件属性（书里带 onclick 的商品页不少见），
+  // 并清掉 javascript:/vbscript: 链接。之后再改写为 epub:// 资源地址。
+  for (const el of Array.from(doc.querySelectorAll('*'))) {
+    for (const attr of Array.from(el.attributes)) {
+      const name = attr.name.toLowerCase()
+      if (name.startsWith('on') || name === 'srcdoc') {
+        el.removeAttribute(attr.name)
+        continue
+      }
+      if (name === 'href' || name === 'src' || name === 'xlink:href') {
+        const value = attr.value.trim().toLowerCase()
+        if (value.startsWith('javascript:') || value.startsWith('vbscript:')) {
+          el.removeAttribute(attr.name)
+        }
+      }
+    }
   }
 
   for (const el of Array.from(doc.querySelectorAll('*'))) {

@@ -28,12 +28,27 @@ interface TocTreeProps {
   items: TocItem[]
   /** 当前章节的 zip 内路径，用于高亮 */
   activePath?: string | null
+  /** 当前页起点锚点：同一章挂了多个 fragment 时用它精确高亮 */
+  activeFragment?: string | null
   onSelect: (item: TocItem) => void
 }
 
-export function TocTree({ items, activePath, onSelect }: TocTreeProps) {
+export function TocTree({ items, activePath, activeFragment, onSelect }: TocTreeProps) {
   const tree = useMemo(() => buildTree(items), [items])
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set())
+
+  // 同一章可能有多条目录项（小节/脚注锚点）：只高亮最贴近当前页的那一条，
+  // 否则一次会把整章的目录项全点亮。fragment 匹配不上时退回本章第一条。
+  const activeKey = useMemo(() => {
+    if (!activePath) return null
+    const sameChapter = items.filter((item) => item.path === activePath)
+    if (sameChapter.length === 0) return null
+    const exact = activeFragment
+      ? sameChapter.find((item) => item.fragment === activeFragment)
+      : undefined
+    const target = exact ?? sameChapter[0]
+    return `${target.href}#${target.fragment ?? ''}`
+  }, [items, activePath, activeFragment])
 
   if (items.length === 0) {
     return <div className="px-3 py-4 text-xs text-overlay0">这本书没有可用的目录</div>
@@ -45,7 +60,7 @@ export function TocTree({ items, activePath, onSelect }: TocTreeProps) {
       const key = `${item.href}#${item.fragment ?? ''}`
       const hasChildren = node.children.length > 0
       const isCollapsed = collapsed.has(key)
-      const active = !!activePath && item.path === activePath
+      const active = activeKey != null && key === activeKey
 
       return (
         <div key={`${key}-${level}`}>

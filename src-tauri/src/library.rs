@@ -153,10 +153,12 @@ pub fn list(db: &Db, options: &ListOptions) -> AppResult<Vec<BookSummary>> {
 
     // 关键词：标题/作者/出版商模糊匹配（LIKE 大小写不敏感仅对 ASCII 生效，
     // 中文按子串直接匹配，正好符合预期）。
+    // 注意 SQLite 的 LIKE 默认没有转义字符，必须显式 ESCAPE '\'，
+    // 否则 escape_like 输出的 `\%` 会变成「反斜杠 + 通配符」而不是字面量。
     let sql = if keyword.is_some() {
         format!(
-            "{base} AND (b.title LIKE ?1 OR COALESCE(b.author, '') LIKE ?1
-                        OR COALESCE(b.publisher, '') LIKE ?1)
+            "{base} AND (b.title LIKE ?1 ESCAPE '\\' OR COALESCE(b.author, '') LIKE ?1 ESCAPE '\\'
+                        OR COALESCE(b.publisher, '') LIKE ?1 ESCAPE '\\')
              ORDER BY {order}"
         )
     } else {
@@ -390,7 +392,7 @@ fn write_cover(covers_dir: &Path, file_hash: &str, book: &OpenedBook) -> AppResu
         .as_deref()
         .ok_or_else(|| AppError::EntryMissing("该书没有封面".into()))?;
     let bytes = book.read_entry(cover_path)?;
-    let ext = cover_extension(cover_path, &book.package.opf_path);
+    let ext = cover_extension(cover_path);
     std::fs::create_dir_all(covers_dir)?;
     let name = format!("{file_hash}.{ext}");
     // 同一本书重复导入会覆盖同名文件，内容一致，无副作用。
@@ -398,7 +400,7 @@ fn write_cover(covers_dir: &Path, file_hash: &str, book: &OpenedBook) -> AppResu
     Ok(name)
 }
 
-fn cover_extension(cover_path: &str, _opf_path: &str) -> String {
+fn cover_extension(cover_path: &str) -> String {
     let ext = match epub::mime_for(cover_path) {
         "image/jpeg" => "jpg",
         "image/png" => "png",
@@ -429,9 +431,57 @@ fn find_ci(haystack: &str, needle: &str) -> Option<usize> {
     })
 }
 
+/// `rest` 以 `<` 开头；判断这个标签是否属于「块级/换行」语义。
+fn is_block_tag(rest: &str) -> bool {
+    let after = rest[1..].strip_prefix('/').unwrap_or(&rest[1..]);
+    let bytes = after.as_bytes();
+    let mut end = 0;
+    while end < bytes.len() && (bytes[end].is_ascii_alphanumeric()) {
+        end += 1;
+    }
+    if end == 0 {
+        return false;
+    }
+    let name = after.as_bytes()[..end].to_ascii_lowercase();
+    matches!(
+        name.as_slice(),
+        b"p" | b"div"
+            | b"br"
+            | b"hr"
+            | b"li"
+            | b"ul"
+            | b"ol"
+            | b"dl"
+            | b"dt"
+            | b"dd"
+            | b"tr"
+            | b"td"
+            | b"th"
+            | b"section"
+            | b"article"
+            | b"aside"
+            | b"header"
+            | b"footer"
+            | b"nav"
+            | b"main"
+            | b"figure"
+            | b"figcaption"
+            | b"blockquote"
+            | b"pre"
+            | b"table"
+            | b"h1"
+            | b"h2"
+            | b"h3"
+            | b"h4"
+            | b"h5"
+            | b"h6"
+    )
+}
+
 /// 粗略统计可见正文字符数：去掉标签、注释、script/style 内容，解码常见实体。
 ///
 /// 不做完整 HTML 解析——只为字数/进度展示服务，几百万字也只需毫秒级。
+#[cfg_attr(not(test), allow(dead_code))] // 仅测试用于校验 html_to_text 的字数口径
 pub fn plain_text_len(html: &str) -> usize {
     html_to_text(html).chars().filter(|c| !c.is_whitespace()).count()
 }
@@ -485,6 +535,12 @@ pub fn html_to_text(html: &str) -> String {
                 continue;
             }
 
+            // 块级标签在正文里也要产生分隔：否则 `<p>第一章</p><p>纸上的灯</p>`
+            // 会拼成「第一章纸上的灯」，让搜索短语命中跨段、摘录读起来也怪。
+            if is_block_tag(rest) && !out.is_empty() {
+                pending_space = true;
+            }
+
             match rest.find('>') {
                 Some(pos) => {
                     i += pos + 1;
@@ -494,8 +550,8 @@ pub fn html_to_text(html: &str) -> String {
             }
         }
 
-        if bytes[i] == b'&' {
-            if let Some(semi) = html[i..].find(';').filter(|n| *n <= 10) {
+        if bytes[i] == b'&'
+            && let Some(semi) = html[i..].find(';').filter(|n| *n <= 10) {
                 let entity = &html[i + 1..i + semi];
                 let ch = match entity {
                     "amp" => Some('&'),
@@ -521,7 +577,6 @@ pub fn html_to_text(html: &str) -> String {
                     continue;
                 }
             }
-        }
 
         // 多字节 UTF-8：按字符推进。
         let ch = html[i..].chars().next().unwrap_or('\u{fffd}');
@@ -663,22 +718,22 @@ mod tests {
             prefix: Some("第一章".into()),
             suffix: None,
             occurrence: 0,
-            color: Some("green".into()),
+            color: Some(AnnotationColor::Green),
             note: Some("  记一笔  ".into()),
         };
         let added = annotation_add(&db, book_id, &input).unwrap();
-        assert_eq!(added.color, "green");
+        assert_eq!(added.color, AnnotationColor::Green);
         assert_eq!(added.note.as_deref(), Some("记一笔"), "备注应去首尾空白");
 
-        // 未知颜色回落默认黄；空引文拒绝
-        let unknown_color = AnnotationInput {
-            color: Some("rainbow".into()),
+        // 省略颜色时默认黄；空引文拒绝
+        let default_color = AnnotationInput {
+            color: None,
             note: None,
             ..input.clone()
         };
         assert_eq!(
-            annotation_add(&db, book_id, &unknown_color).unwrap().color,
-            "yellow"
+            annotation_add(&db, book_id, &default_color).unwrap().color,
+            AnnotationColor::Yellow
         );
         let empty_quote = AnnotationInput {
             quote: "   ".into(),
@@ -688,9 +743,10 @@ mod tests {
 
         assert_eq!(annotation_list(&db, book_id).unwrap().len(), 2);
 
-        let updated = annotation_update(&db, added.id, Some("改过的备注"), Some("blue")).unwrap();
+        let updated =
+            annotation_update(&db, added.id, Some("改过的备注"), Some(AnnotationColor::Blue)).unwrap();
         assert_eq!(updated.note.as_deref(), Some("改过的备注"));
-        assert_eq!(updated.color, "blue");
+        assert_eq!(updated.color, AnnotationColor::Blue);
 
         // 传空字符串 = 清空备注
         assert!(annotation_update(&db, added.id, Some(""), None)
@@ -739,6 +795,137 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// 现场生成一本最小 EPUB（不依赖 gitignored 的 `.books/`，测试永远可跑）。
+    ///
+    /// title 可定制，用来验证像书的标题里带 `%`/`_` 时 LIKE 转义是否正确。
+    fn mini_epub(path: &Path, title: &str, encrypted: bool) {
+        use std::io::Write as _;
+        let file = std::fs::File::create(path).expect("建测试 epub");
+        let mut zip = zip::ZipWriter::new(file);
+        let stored: zip::write::FileOptions<'_, ()> =
+            zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        zip.start_file("mimetype", stored).unwrap();
+        zip.write_all(b"application/epub+zip").unwrap();
+
+        let deflated: zip::write::FileOptions<'_, ()> =
+            zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+        zip.start_file("META-INF/container.xml", deflated).unwrap();
+        zip.write_all(
+            br#"<?xml version="1.0"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles>
+</container>"#,
+        )
+        .unwrap();
+
+        let title = title.replace('&', "&amp;").replace('<', "&lt;");
+        let opf = format!(
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="id">test-mini</dc:identifier>
+    <dc:title>{title}</dc:title>
+    <dc:language>zh-CN</dc:language>
+  </metadata>
+  <manifest><item id="ch1" href="Text/ch1.xhtml" media-type="application/xhtml+xml"/></manifest>
+  <spine><itemref idref="ch1"/></spine>
+</package>"#
+        );
+        zip.start_file("OEBPS/content.opf", deflated).unwrap();
+        zip.write_all(opf.as_bytes()).unwrap();
+        zip.start_file("OEBPS/Text/ch1.xhtml", deflated).unwrap();
+        zip.write_all(
+            br#"<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><body>
+<p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p><p>         </p></body></html>"#,
+        )
+        .unwrap();
+        if encrypted {
+            zip.start_file("META-INF/encryption.xml", deflated).unwrap();
+            zip.write_all(
+                br#"<?xml version="1.0"?>
+<encryption xmlns="urn:oasis:names:tc:opendocument:xmlns:container"
+            xmlns:enc="http://www.w3.org/2001/04/xmlenc#">
+  <enc:EncryptedData>
+    <enc:CipherData><enc:CipherReference URI="OEBPS/Text/ch1.xhtml"/></enc:CipherData>
+  </enc:EncryptedData>
+</encryption>"#,
+            )
+            .unwrap();
+        }
+        zip.finish().unwrap();
+    }
+
+    /// 段落之间要有分隔，否则 `第一章`+`纸上的灯` 会拼成一个词。
+    #[test]
+    fn html_to_text_separates_blocks() {
+        let text = html_to_text("<p>第一章</p><p>纸上的灯</p><div>尾巴</div>");
+        assert_eq!(text, "第一章 纸上的灯 尾巴");
+        assert!(html_to_text("<p>a</p><p>b</p>").contains(' '));
+    }
+
+    /// 标题里的 `%`/`_` 必须按字面量匹配（回归：LIKE 缺 ESCAPE 时它们是通配符）。
+    #[test]
+    fn list_escapes_like_wildcards() {
+        let dir = temp_dir();
+        let db = Db::open(&dir.join("modu.db")).unwrap();
+        let epub = dir.join("wildcards.epub");
+        mini_epub(&epub, "100%_真实", false);
+        import(&db, &dir.join("covers"), &[epub.to_string_lossy().to_string()]);
+
+        let hit = |query: &str| {
+            list(
+                &db,
+                &ListOptions { sort: None, filter: None, query: Some(query.into()) },
+            )
+            .unwrap()
+            .len()
+        };
+        assert_eq!(hit("100%"), 1, "`%` 应按字面量匹配");
+        assert_eq!(hit("_"), 1, "`_` 应按字面量匹配");
+        assert_eq!(hit("zzz%"), 0, "没有匹配时不能因为通配符而命中");
+        assert_eq!(hit("真实"), 1);
+    }
+
+    /// 批注导出 Markdown：书名标题、章节二级标题、引文 blockquote、备注前缀。
+    #[test]
+    fn annotations_markdown_exports() {
+        let dir = temp_dir();
+        let db = Db::open(&dir.join("modu.db")).unwrap();
+        let epub = dir.join("markdown.epub");
+        mini_epub(&epub, "导出测试书", false);
+        let book_id = import(&db, &dir.join("covers"), &[epub.to_string_lossy().to_string()])[0]
+            .book
+            .as_ref()
+            .expect("导入应成功")
+            .id;
+
+        annotation_add(
+            &db,
+            book_id,
+            &AnnotationInput {
+                locator: r#"{"v":1,"index":0,"fraction":0.1}"#.into(),
+                chapter_href: "OEBPS/Text/ch1.xhtml".into(),
+                chapter_title: Some("第一章".into()),
+                quote: "纸上的灯".into(),
+                prefix: None,
+                suffix: None,
+                occurrence: 0,
+                color: Some(AnnotationColor::Pink),
+                note: Some("这句好".into()),
+            },
+        )
+        .unwrap();
+
+        let md = annotations_markdown(&db, book_id).unwrap();
+        assert!(md.starts_with("# 导出测试书 · 批注"), "md = {md}");
+        assert!(md.contains("## 第一章"));
+        assert!(md.contains("> 纸上的灯"));
+        assert!(md.contains("备注：这句好"));
+        assert!(md.contains("pink划线"));
+    }
+
 }
 
 // ---------------------------------------------------------------------------
@@ -902,7 +1089,7 @@ pub struct Annotation {
     pub prefix: Option<String>,
     pub suffix: Option<String>,
     pub occurrence: i64,
-    pub color: String,
+    pub color: AnnotationColor,
     pub note: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
@@ -919,19 +1106,40 @@ pub struct AnnotationInput {
     pub prefix: Option<String>,
     pub suffix: Option<String>,
     pub occurrence: i64,
-    pub color: Option<String>,
+    pub color: Option<AnnotationColor>,
     pub note: Option<String>,
 }
 
-/// 允许的划线颜色。前端传别的值一律落到黄色，避免脏数据进库。
-const ANNOTATION_COLORS: [&str; 4] = ["yellow", "green", "blue", "pink"];
+/// 划线颜色。用枚举而不是裸字符串：非法值在 IPC 边界就被 serde 拒掉，
+/// 不会出现「静默改成黄色」这种看不出来的数据漂移。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AnnotationColor {
+    Yellow,
+    Green,
+    Blue,
+    Pink,
+}
 
-fn normalize_annotation_color(color: Option<&str>) -> String {
-    color
-        .map(str::trim)
-        .filter(|c| ANNOTATION_COLORS.contains(c))
-        .unwrap_or("yellow")
-        .to_owned()
+impl AnnotationColor {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Yellow => "yellow",
+            Self::Green => "green",
+            Self::Blue => "blue",
+            Self::Pink => "pink",
+        }
+    }
+
+    /// 读库兜底：历史数据或手工改库出现未知值时按黄色处理，不阻断列表加载。
+    fn from_db(raw: &str) -> Self {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "green" => Self::Green,
+            "blue" => Self::Blue,
+            "pink" => Self::Pink,
+            _ => Self::Yellow,
+        }
+    }
 }
 
 const ANNOTATION_COLUMNS: &str = "id, book_id, locator, chapter_href, chapter_title, quote, \
@@ -948,7 +1156,7 @@ fn row_to_annotation(row: &rusqlite::Row<'_>) -> rusqlite::Result<Annotation> {
         prefix: row.get(6)?,
         suffix: row.get(7)?,
         occurrence: row.get(8)?,
-        color: row.get(9)?,
+        color: AnnotationColor::from_db(&row.get::<_, String>(9)?),
         note: row.get(10)?,
         created_at: row.get(11)?,
         updated_at: row.get(12)?,
@@ -958,9 +1166,9 @@ fn row_to_annotation(row: &rusqlite::Row<'_>) -> rusqlite::Result<Annotation> {
 pub fn annotation_add(db: &Db, book_id: i64, input: &AnnotationInput) -> AppResult<Annotation> {
     let quote = input.quote.trim();
     if quote.is_empty() {
-        return Err(AppError::Internal("批注内容不能为空".into()));
+        return Err(AppError::Validation("批注内容不能为空".into()));
     }
-    let color = normalize_annotation_color(input.color.as_deref());
+    let color = input.color.unwrap_or(AnnotationColor::Yellow);
     let note = input
         .note
         .as_deref()
@@ -983,7 +1191,7 @@ pub fn annotation_add(db: &Db, book_id: i64, input: &AnnotationInput) -> AppResu
                 input.prefix,
                 input.suffix,
                 input.occurrence,
-                color,
+                color.as_str(),
                 note,
                 now
             ],
@@ -1011,11 +1219,11 @@ pub fn annotation_update(
     db: &Db,
     annotation_id: i64,
     note: Option<&str>,
-    color: Option<&str>,
+    color: Option<AnnotationColor>,
 ) -> AppResult<Annotation> {
     let set_note = note.is_some();
     let note = note.map(str::trim).filter(|s| !s.is_empty());
-    let color = color.map(|c| normalize_annotation_color(Some(c)));
+    let color = color.map(AnnotationColor::as_str);
     let now = now_ms();
     db.with(|conn| {
         let changed = conn.execute(
@@ -1032,6 +1240,88 @@ pub fn annotation_update(
         let sql = format!("SELECT {ANNOTATION_COLUMNS} FROM annotations WHERE id = ?1");
         Ok(conn.query_row(&sql, [annotation_id], row_to_annotation)?)
     })
+}
+
+/// 导出整本书的批注为 Markdown（书名/章节/原文/备注/时间）。
+///
+/// 返回字符串而不是直接写文件：写到哪里由前端用系统保存对话框决定，
+/// Rust 侧不猜用户目录，也就不用开 fs 插件权限。
+pub fn annotations_markdown(db: &Db, book_id: i64) -> AppResult<String> {
+    let (title, author) = db.with(|conn| {
+        conn.query_row(
+            "SELECT title, COALESCE(author, '') FROM books WHERE id = ?1",
+            [book_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .map_err(|_| AppError::NotFound(format!("书籍不存在: {book_id}")))
+    })?;
+    let annotations = annotation_list(db, book_id)?;
+
+    let mut md = String::new();
+    md.push_str(&format!("# {title} · 批注\n\n"));
+    if !author.is_empty() {
+        md.push_str(&format!("- 作者：{author}\n"));
+    }
+    md.push_str(&format!("- 批注数：{}\n", annotations.len()));
+    md.push_str("- 导出工具：墨读（Modu）\n\n");
+
+    let mut current_chapter: Option<String> = None;
+    for item in &annotations {
+        let chapter = item
+            .chapter_title
+            .clone()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| {
+                item.chapter_href
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or(&item.chapter_href)
+                    .to_string()
+            });
+        if current_chapter.as_deref() != Some(chapter.as_str()) {
+            md.push_str(&format!("## {chapter}\n\n"));
+            current_chapter = Some(chapter);
+        }
+        // 原文按 blockquote；引文里本身可能有换行，逐行加 `> `。
+        for line in item.quote.lines() {
+            md.push_str(&format!("> {line}\n"));
+        }
+        if let Some(note) = item.note.as_deref().filter(|s| !s.trim().is_empty()) {
+            md.push('\n');
+            for line in note.lines() {
+                md.push_str(&format!("备注：{line}\n"));
+            }
+        }
+        md.push_str(&format!(
+            "\n*{}划线 · {}*\n\n",
+            item.color.as_str(),
+            format_time_ms(item.created_at)
+        ));
+    }
+    Ok(md)
+}
+
+/// 毫秒时间戳 → `YYYY-MM-DD HH:mm`（按 UTC 展示；导出仅供人读，不做时区换算）。
+fn format_time_ms(ms: i64) -> String {
+    let secs = ms.div_euclid(1000);
+    let days = secs.div_euclid(86_400);
+    let time = secs.rem_euclid(86_400);
+    // 1970-01-01 起的天数 → 年月日（civil_from_days 算法，避免拉 chrono 依赖）。
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!(
+        "{y:04}-{m:02}-{d:02} {:02}:{:02}",
+        time / 3600,
+        (time % 3600) / 60
+    )
 }
 
 pub fn annotation_remove(db: &Db, annotation_id: i64) -> AppResult<()> {

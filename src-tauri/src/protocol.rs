@@ -58,7 +58,7 @@ fn serve_cover(state: &AppState, file: &str) -> Response<Vec<u8>> {
             .header(header::CONTENT_TYPE, mime_for(&decoded))
             .header(header::CACHE_CONTROL, "public, max-age=31536000, immutable")
             .body(bytes)
-            .unwrap_or_else(|_| internal("构造响应失败")),
+            .unwrap_or_else(|_| error_response(StatusCode::INTERNAL_SERVER_ERROR, "构造响应失败")),
         Err(err) => not_found(&format!("封面读取失败: {err}")),
     }
 }
@@ -67,35 +67,33 @@ fn serve(book: Arc<OpenedBook>, entry: String, request: &Request<Vec<u8>>) -> Re
     match book.read_entry(&entry) {
         Ok(bytes) => {
             let mime = mime_for(&entry);
-            let mut builder = Response::builder()
+            // 字体（@font-face）是 CORS 请求，没有这个头浏览器会拒绝加载。
+            // 只发一个 ACAO：有 Origin 就回显（覆盖 `null` 之类的特殊值），否则用 `*`。
+            let allow_origin = request
+                .headers()
+                .get(header::ORIGIN)
+                .and_then(|origin| origin.to_str().ok())
+                .unwrap_or("*");
+            Response::builder()
                 .status(StatusCode::OK)
                 .header(header::CONTENT_TYPE, mime)
-                // 字体（@font-face）是 CORS 请求，没有这个头浏览器会拒绝加载。
-                .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                .header(header::CACHE_CONTROL, "no-cache");
-            if let Some(origin) = request.headers().get(header::ORIGIN) {
-                // 回显 origin，兼容极少数对 ACAO 严格校验的场景
-                builder = builder.header("access-control-allow-origin", origin);
-            }
-            builder
+                .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, allow_origin)
+                // bookId 由文件内容算出，同一 URL 的内容在本次安装里不会变化。
+                .header(header::CACHE_CONTROL, "public, max-age=31536000, immutable")
                 .body(bytes)
-                .unwrap_or_else(|_| internal("构造响应失败"))
+                .unwrap_or_else(|_| error_response(StatusCode::INTERNAL_SERVER_ERROR, "构造响应失败"))
         }
-        Err(err) => not_found(&err.to_string()),
+        Err(err) => error_response(StatusCode::NOT_FOUND, &err.to_string()),
     }
 }
 
 fn not_found(message: &str) -> Response<Vec<u8>> {
-    Response::builder()
-        .status(StatusCode::NOT_FOUND)
-        .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
-        .body(message.as_bytes().to_vec())
-        .expect("static response")
+    error_response(StatusCode::NOT_FOUND, message)
 }
 
-fn internal(message: &str) -> Response<Vec<u8>> {
+fn error_response(status: StatusCode, message: &str) -> Response<Vec<u8>> {
     Response::builder()
-        .status(StatusCode::INTERNAL_SERVER_ERROR)
+        .status(status)
         .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
         .body(message.as_bytes().to_vec())
         .expect("static response")

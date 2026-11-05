@@ -17,6 +17,10 @@ pub enum AppError {
     Unsupported(String),
     #[error("条目不存在: {0}")]
     EntryMissing(String),
+    /// 用户可修复的输入问题（空引文、非法颜色…）。与 Internal 区分开，
+    /// 前端不会把它当成程序 bug 报「内部错误」。
+    #[error("{0}")]
+    Validation(String),
     #[error("内部错误: {0}")]
     Internal(String),
 }

@@ -1,4 +1,4 @@
-import { Highlighter, NotebookPen, PencilLine, Trash2 } from 'lucide-react'
+import { FileDown, Highlighter, NotebookPen, PencilLine, Trash2 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 
 import { cn } from '../../lib/cn'
@@ -13,6 +13,8 @@ interface AnnotationsPanelProps {
   onRemove: (annotation: Annotation) => void
   /** 保存批注（空字符串 = 清空） */
   onNote: (annotation: Annotation, note: string) => void
+  /** 导出整本书的批注为 Markdown */
+  onExport: () => void
 }
 
 const SWATCHES: Record<AnnotationColor, string> = {
@@ -44,6 +46,7 @@ export function AnnotationsPanel({
   onJump,
   onRemove,
   onNote,
+  onExport,
 }: AnnotationsPanelProps) {
   // 正在编辑备注的批注 id；同一时间只编辑一条
   const [editingId, setEditingId] = useState<number | null>(null)
@@ -86,7 +89,20 @@ export function AnnotationsPanel({
   }
 
   return (
-    <div className="space-y-1 p-2">
+    <div className="p-2">
+      <div className="mb-1 flex items-center justify-between px-1 text-[10px] tabular-nums text-overlay0/70">
+        <span>{annotations.length} 条批注</span>
+        <button
+          type="button"
+          onClick={onExport}
+          title="导出批注为 Markdown"
+          className="flex items-center gap-1 rounded px-1.5 py-0.5 text-overlay0 transition hover:bg-surface0/70 hover:text-text"
+        >
+          <FileDown size={11} />
+          导出
+        </button>
+      </div>
+      <div className="space-y-1">
       {annotations.map((annotation) => {
         const color = (annotation.color ?? 'yellow') as AnnotationColor
         return (
@@ -194,6 +210,7 @@ export function AnnotationsPanel({
           </div>
         )
       })}
+      </div>
     </div>
   )
 }
