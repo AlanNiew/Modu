@@ -11,6 +11,19 @@
 
 **标识**：一滴墨落进摊开的书里——「墨」是内容，「读」是那本书；墨砖底 + 纸色书页 + 淡紫到蓝的墨滴，与深色/羊皮纸主题同源。矢量源在 `src/assets/logo.svg`，图标集由 `pnpm tauri icon src/assets/logo.svg` 生成到 `src-tauri/icons/`。
 
+## 下载与安装
+
+到 [Releases](https://github.com/AlanNiew/Modu/releases) 下载，两个包功能完全一致：
+
+| 包 | 适用 | 说明 |
+| --- | --- | --- |
+| `墨读_x.y.z_x64-setup.exe` | 日常使用 | 安装到 `%LOCALAPPDATA%`，有开始菜单入口，可在「应用和功能」卸载 |
+| `墨读_x.y.z_portable_x64.zip` | U 盘 / 免安装 | 解压即用；双击 `启动（便携模式）.cmd` 把数据放在同目录 `ModuData\` |
+
+> **首次运行可能遇到 Windows SmartScreen 提示「发布者：未知」**——这是未签名的新下载文件的默认行为，不是病毒告警。
+> 安装版：点「更多信息 → 仍要运行」；便携版：**先**右键 ZIP → 属性 → 勾选「解除锁定」→ **再**解压（或用 7-Zip 解压），之后双击通常不再提示。
+> 请对照发布页的 SHA-256 校验文件：`certutil -hashfile <文件名> SHA256`。
+
 ## 特性
 
 - **书架**：拖拽批量导入、封面/字数/章数、搜索、排序（最近阅读/书名/作者/入库时间）、在读/未读/读完筛选；SQLite + 虚拟滚动，上千本也不卡。
@@ -49,6 +62,7 @@ pnpm test             # vitest（前端单测）
 cd src-tauri && cargo test   # Rust 单测（含 DRM/畸形样本/大书基准）
 cd src-tauri && cargo clippy --lib --tests -- -D warnings   # 零告警门禁
 pnpm tauri build --bundles nsis   # 打安装包
+pnpm bundle:portable              # 打便携版 ZIP（需先有 release 构建）
 ```
 
 > Windows 需要 MSVC Build Tools（Desktop development with C++）与 WebView2 Runtime；`cargo` 编译 `zip`/`SQLite` 时如果撞上 MSVC 的 `D8050` 报错，见 `src-tauri/Cargo.toml` 里的 `[profile.dev.package.libsqlite3-sys]` 处理。
