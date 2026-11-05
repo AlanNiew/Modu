@@ -11,7 +11,10 @@ use rusqlite::Connection;
 use crate::error::{AppError, AppResult};
 
 /// 当前 schema 版本。新增迁移时 +1，并在 [`migrate`] 里追加分支。
-pub const SCHEMA_VERSION: i64 = 1;
+///
+/// v1：书库 / 章节 / 进度 / 书签 / 全文索引。
+/// v2：批注（划线 + 备注）。选择器用「引文 + 前后文 + 第几次出现」，不依赖 CFI/像素。
+pub const SCHEMA_VERSION: i64 = 2;
 
 pub struct Db(pub Mutex<Connection>);
 
@@ -121,6 +124,32 @@ fn migrate(conn: &mut Connection) -> AppResult<()> {
               book_id UNINDEXED,
               tokenize = 'trigram'
             );
+            "#,
+        )?;
+    }
+
+    // v2：批注。选择器存「引文 + 前后各 32 字 + 同章内第几次出现」，
+    // 打开书时按当前排版重新解析成 Range——换字号/换书源都不会漂。
+    if from < 2 {
+        tx.execute_batch(
+            r#"
+            CREATE TABLE annotations (
+              id            INTEGER PRIMARY KEY,
+              book_id       INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+              locator       TEXT    NOT NULL,
+              chapter_href  TEXT    NOT NULL,
+              chapter_title TEXT,
+              quote         TEXT    NOT NULL,
+              prefix        TEXT,
+              suffix        TEXT,
+              occurrence    INTEGER NOT NULL DEFAULT 0,
+              color         TEXT    NOT NULL DEFAULT 'yellow',
+              note          TEXT,
+              created_at    INTEGER NOT NULL,
+              updated_at    INTEGER NOT NULL
+            );
+
+            CREATE INDEX idx_annotations_book ON annotations(book_id, created_at DESC);
             "#,
         )?;
     }

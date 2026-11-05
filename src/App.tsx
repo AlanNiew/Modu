@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
+import { getCurrentWindow } from '@tauri-apps/api/window'
 import { Loader2 } from 'lucide-react'
 
+import { HelpDialog } from './components/HelpDialog'
 import { WindowResizeHandles } from './components/WindowResizeHandles'
 import { ReaderPage } from './features/reader/ReaderPage'
 import { ShelfPage } from './features/shelf/ShelfPage'
@@ -27,6 +29,8 @@ export default function App() {
   const [dragging, setDragging] = useState(false)
   // dev spike 打开的书会跑一遍阅读器自检（见 ReaderPage 注释）。
   const [spikeAuto, setSpikeAuto] = useState(false)
+  const [helpOpen, setHelpOpen] = useState(false)
+  const [fullscreen, setFullscreen] = useState(false)
 
   const importPaths = useLibrary((state) => state.importPaths)
   const theme = useReaderSettings((state) => state.settings.theme)
@@ -44,6 +48,54 @@ export default function App() {
     query.addEventListener('change', onChange)
     return () => query.removeEventListener('change', onChange)
   }, [theme])
+
+  const toggleFullscreen = useCallback(async () => {
+    try {
+      const appWindow = getCurrentWindow()
+      const next = !(await appWindow.isFullscreen())
+      await appWindow.setFullscreen(next)
+      setFullscreen(next)
+    } catch (err) {
+      console.error('[app] 切换全屏失败', err)
+    }
+  }, [])
+
+  // 全局快捷键：F11 全屏、F1 帮助。输入框里也允许，避免「按了没反应」。
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'F11') {
+        event.preventDefault()
+        void toggleFullscreen()
+        return
+      }
+      if (event.key === 'F1') {
+        event.preventDefault()
+        setHelpOpen((open) => !open)
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [toggleFullscreen])
+
+  // 从系统全屏按钮（或 F11）退出时同步状态
+  useEffect(() => {
+    let disposed = false
+    let unlisten: (() => void) | undefined
+    void (async () => {
+      unlisten = await getCurrentWindow().onResized(async () => {
+        try {
+          const value = await getCurrentWindow().isFullscreen()
+          if (!disposed) setFullscreen(value)
+        } catch {
+          // 窗口已销毁时忽略
+        }
+      })
+    })()
+    return () => {
+      disposed = true
+      unlisten?.()
+    }
+  }, [])
 
   const handleOpenBook = useCallback(async (book: BookSummary) => {
     setOpenError(null)
@@ -137,14 +189,22 @@ export default function App() {
         <ReaderPage
           book={reader}
           devSpike={spikeAuto}
+          onOpenHelp={() => setHelpOpen(true)}
+          fullscreen={fullscreen}
+          onToggleFullscreen={() => void toggleFullscreen()}
           onBack={() => {
             setReader(null)
             setSpikeAuto(false)
           }}
         />
       ) : (
-        <ShelfPage onOpenBook={(book) => void handleOpenBook(book)} />
+        <ShelfPage
+          onOpenBook={(book) => void handleOpenBook(book)}
+          onOpenHelp={() => setHelpOpen(true)}
+        />
       )}
+
+      <HelpDialog open={helpOpen} onOpenChange={setHelpOpen} />
 
       {(openError || opening) && (
         <div className="pointer-events-none absolute bottom-4 left-1/2 z-30 -translate-x-1/2 rounded-lg border border-surface1 bg-mantle px-4 py-2 text-xs text-subtext shadow-xl">

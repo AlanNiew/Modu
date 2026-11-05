@@ -2,7 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   BookmarkPlus,
   BookOpen,
+  Highlighter,
+  Keyboard,
   ListTree,
+  Maximize,
   Maximize2,
   Minimize2,
   PanelLeft,
@@ -15,21 +18,34 @@ import { openUrl } from '@tauri-apps/plugin-opener'
 import { TitleBar, TitleBarButton } from '../../components/TitleBar'
 import { cn } from '../../lib/cn'
 import {
+  addAnnotation,
   addBookmark,
   closeBook,
   getProgress,
+  listAnnotations,
   listBookmarks,
+  removeAnnotation,
   removeBookmark,
   saveProgress,
   searchBook,
   setBookmarkNote,
+  updateAnnotation,
 } from '../../lib/ipc'
 import { decodeLocator, encodeLocator } from '../../lib/locator'
 import { coverUrl } from '../../lib/protocol'
-import type { Bookmark, OpenedBookInfo, SearchHit, SpineItem, TocItem } from '../../lib/types'
+import type {
+  Annotation,
+  AnnotationDraft,
+  Bookmark,
+  OpenedBookInfo,
+  SearchHit,
+  SpineItem,
+  TocItem,
+} from '../../lib/types'
 import { useLibrary } from '../../store/library'
 import { useReaderSettings } from '../../store/settings'
 import { ReaderView, type ReaderApi, type RelocateState } from '../../renderer/ReaderView'
+import { AnnotationsPanel } from './AnnotationsPanel'
 import { BookmarksPanel } from './BookmarksPanel'
 import { ReadingSettingsPanel } from './ReadingSettingsPanel'
 import { TocTree } from './TocTree'
@@ -117,11 +133,15 @@ async function runBookmarkSmoke(
 interface ReaderPageProps {
   book: OpenedBookInfo
   onBack: () => void
+  /** 打开快捷键帮助面板（App 统一持有 Dialog）。 */
+  onOpenHelp: () => void
+  fullscreen: boolean
+  onToggleFullscreen: () => void
   /** dev spike 打开时自动跑一遍交互自检（生产构建不生效）。 */
   devSpike?: boolean
 }
 
-type SidebarTab = 'toc' | 'bookmarks' | 'search'
+type SidebarTab = 'toc' | 'bookmarks' | 'annotations' | 'search'
 
 /**
  * 阅读器页面。
@@ -134,7 +154,14 @@ type SidebarTab = 'toc' | 'bookmarks' | 'search'
  * - 排版：主题/字体/字号/行高/版心/页边距，走 localStorage 持久化。
  * - 沉浸：隐藏顶栏、侧栏、底栏，只留正文。
  */
-export function ReaderPage({ book, onBack, devSpike = false }: ReaderPageProps) {
+export function ReaderPage({
+  book,
+  onBack,
+  onOpenHelp,
+  fullscreen,
+  onToggleFullscreen,
+  devSpike = false,
+}: ReaderPageProps) {
   const { settings, patch, setFontFamilyKind, reset } = useReaderSettings()
 
   const [error, setError] = useState<string | null>(null)
@@ -152,12 +179,17 @@ export function ReaderPage({ book, onBack, devSpike = false }: ReaderPageProps) 
   const [immersive, setImmersive] = useState(false)
   const [bookmarks, setBookmarks] = useState<Bookmark[]>([])
   const [bookmarksLoading, setBookmarksLoading] = useState(false)
+  const [annotations, setAnnotations] = useState<Annotation[]>([])
+  const [annotationsLoading, setAnnotationsLoading] = useState(false)
+  // 面板里高亮/展开的那条批注（点正文划线或刚新建时设置）
+  const [activeAnnotationId, setActiveAnnotationId] = useState<number | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
   const [searchResults, setSearchResults] = useState<SearchHit[]>([])
   const [searching, setSearching] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
 
   const apiRef = useRef<ReaderApi | null>(null)
+  const searchInputRef = useRef<HTMLInputElement | null>(null)
   const [smokeLog, setSmokeLog] = useState<string[]>([])
   const smokeRan = useRef(false)
   const loadedIndexRef = useRef<number | null>(null)
@@ -309,6 +341,9 @@ export function ReaderPage({ book, onBack, devSpike = false }: ReaderPageProps) 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return
+      // 帮助面板等 Radix 弹层自己也吃 Esc：弹层打开时交给它关，
+      // 否则一次 Esc 会「关面板 + 退回书架」两件事一起做。
+      if (document.querySelector('[role="dialog"]')) return
       if (immersiveRef.current) {
         setImmersive(false)
         return
@@ -430,6 +465,125 @@ export function ReaderPage({ book, onBack, devSpike = false }: ReaderPageProps) 
 
   const toggleImmersive = useCallback(() => setImmersive((value) => !value), [])
 
+  /** Ctrl+K：打开侧栏搜索并聚焦；侧栏收起时一并展开。 */
+  const focusSearch = useCallback(() => {
+    setSidebarTab('search')
+    setSidebarOpen(true)
+    window.setTimeout(() => searchInputRef.current?.focus(), 60)
+  }, [])
+
+  // 阅读器快捷键：Ctrl+B 侧栏、Ctrl+K 搜索、Ctrl+D 书签（F1/F11 由 App 处理）
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!event.ctrlKey && !event.metaKey) return
+      // 弹层（帮助/设置）打开时不响应页面快捷键
+      if (document.querySelector('[role="dialog"]')) return
+      const target = event.target as HTMLElement | null
+      const inField = !!target && /^(INPUT|TEXTAREA)$/.test(target.tagName)
+      if (inField && event.key.toLowerCase() !== 'b') return
+      const key = event.key.toLowerCase()
+      if (key === 'b') {
+        event.preventDefault()
+        setSidebarOpen((value) => !value)
+      } else if (key === 'k') {
+        event.preventDefault()
+        focusSearch()
+      } else if (key === 'd') {
+        event.preventDefault()
+        void handleAddBookmark()
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [focusSearch, handleAddBookmark])
+
+  // -------------------------------------------------------------------------
+  // 批注（M4）
+  // -------------------------------------------------------------------------
+
+  const loadAnnotations = useCallback(async () => {
+    if (libraryId == null) return
+    setAnnotationsLoading(true)
+    try {
+      setAnnotations(await listAnnotations(libraryId))
+    } catch (err) {
+      console.error('[reader] 读取批注失败', err)
+    } finally {
+      setAnnotationsLoading(false)
+    }
+  }, [libraryId])
+
+  useEffect(() => {
+    void loadAnnotations()
+  }, [loadAnnotations])
+
+  /** 正文里划线/写批注：落库后由 annotations state 触发重画。 */
+  const handleAnnotate = useCallback(
+    async (draft: AnnotationDraft, mode: 'highlight' | 'note') => {
+      if (libraryId == null) {
+        showToast('从书架打开的书才能加批注')
+        return
+      }
+      try {
+        const created = await addAnnotation(libraryId, {
+          ...draft,
+          chapterTitle: currentChapterLabel,
+          color: draft.color ?? 'yellow',
+          note: null,
+        })
+        setAnnotations((prev) => [created, ...prev])
+        setSidebarTab('annotations')
+        setSidebarOpen(true)
+        setActiveAnnotationId(created.id)
+        showToast(mode === 'note' ? '写下你的想法' : '已划线')
+      } catch (err) {
+        console.error('[reader] 新建批注失败', err)
+        showToast('划线失败')
+      }
+    },
+    [currentChapterLabel, libraryId, showToast],
+  )
+
+  const handleAnnotationNote = useCallback(
+    async (annotation: Annotation, note: string) => {
+      try {
+        const updated = await updateAnnotation(annotation.id, note)
+        setAnnotations((prev) => prev.map((item) => (item.id === updated.id ? updated : item)))
+        showToast(note.trim() ? '批注已保存' : '批注已清空')
+      } catch (err) {
+        console.error('[reader] 保存批注失败', err)
+        showToast('保存批注失败')
+      }
+    },
+    [showToast],
+  )
+
+  const handleRemoveAnnotation = useCallback(
+    async (annotation: Annotation) => {
+      try {
+        await removeAnnotation(annotation.id)
+        setAnnotations((prev) => prev.filter((item) => item.id !== annotation.id))
+        setActiveAnnotationId((current) => (current === annotation.id ? null : current))
+      } catch (err) {
+        console.error('[reader] 删除批注失败', err)
+        showToast('删除批注失败')
+      }
+    },
+    [showToast],
+  )
+
+  /** 点正文里的划线：切到批注页并选中那一条。 */
+  const handleAnnotationActivate = useCallback((id: number) => {
+    setActiveAnnotationId(id)
+    setSidebarTab('annotations')
+    setSidebarOpen(true)
+  }, [])
+
+  const jumpToAnnotation = useCallback(async (annotation: Annotation) => {
+    setActiveAnnotationId(annotation.id)
+    await apiRef.current?.revealAnnotation(annotation)
+  }, [])
+
   return (
     <div className="flex h-full min-h-0 flex-col bg-base text-text">
       {!immersive && (
@@ -461,6 +615,15 @@ export function ReaderPage({ book, onBack, devSpike = false }: ReaderPageProps) 
               </TitleBarButton>
               <TitleBarButton title="沉浸模式" onClick={toggleImmersive}>
                 <Maximize2 size={15} />
+              </TitleBarButton>
+              <TitleBarButton
+                title={fullscreen ? '退出全屏（F11）' : '全屏（F11）'}
+                onClick={onToggleFullscreen}
+              >
+                {fullscreen ? <Minimize2 size={15} /> : <Maximize size={15} />}
+              </TitleBarButton>
+              <TitleBarButton title="快捷键与帮助（F1）" onClick={onOpenHelp}>
+                <Keyboard size={15} />
               </TitleBarButton>
             </>
           }
@@ -510,48 +673,43 @@ export function ReaderPage({ book, onBack, devSpike = false }: ReaderPageProps) 
             </div>
 
             <div className="flex shrink-0 gap-1 border-b border-surface0/60 p-2">
-              <button
-                type="button"
-                onClick={() => setSidebarTab('toc')}
-                className={cn(
-                  'flex h-7 flex-1 items-center justify-center gap-1.5 rounded-md text-[11px] transition',
-                  sidebarTab === 'toc'
-                    ? 'bg-surface0 text-text'
-                    : 'text-overlay0 hover:text-text',
-                )}
-              >
-                <ListTree size={12} />
-                目录
-              </button>
-              <button
-                type="button"
-                onClick={() => setSidebarTab('bookmarks')}
-                className={cn(
-                  'flex h-7 flex-1 items-center justify-center gap-1.5 rounded-md text-[11px] transition',
-                  sidebarTab === 'bookmarks'
-                    ? 'bg-surface0 text-text'
-                    : 'text-overlay0 hover:text-text',
-                )}
-              >
-                <BookmarkIcon size={12} />
-                书签
-                {bookmarks.length > 0 && (
-                  <span className="tabular-nums text-overlay0">{bookmarks.length}</span>
-                )}
-              </button>
-              <button
-                type="button"
-                onClick={() => setSidebarTab('search')}
-                className={cn(
-                  'flex h-7 w-9 items-center justify-center rounded-md text-[11px] transition',
-                  sidebarTab === 'search'
-                    ? 'bg-surface0 text-text'
-                    : 'text-overlay0 hover:text-text',
-                )}
-                title="全书搜索"
-              >
-                <Search size={12} />
-              </button>
+              {(
+                [
+                  { id: 'toc', label: '目录', icon: <ListTree size={12} />, count: 0 },
+                  {
+                    id: 'bookmarks',
+                    label: '书签',
+                    icon: <BookmarkIcon size={12} />,
+                    count: bookmarks.length,
+                  },
+                  {
+                    id: 'annotations',
+                    label: '批注',
+                    icon: <Highlighter size={12} />,
+                    count: annotations.length,
+                  },
+                  { id: 'search', label: '搜索', icon: <Search size={12} />, count: 0 },
+                ] as const
+              ).map((tab) => (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => setSidebarTab(tab.id)}
+                  title={tab.label}
+                  className={cn(
+                    'flex h-7 flex-1 items-center justify-center gap-1 rounded-md text-[11px] transition',
+                    sidebarTab === tab.id
+                      ? 'bg-surface0 text-text'
+                      : 'text-overlay0 hover:text-text',
+                  )}
+                >
+                  {tab.icon}
+                  <span className="truncate">{tab.label}</span>
+                  {tab.count > 0 && (
+                    <span className="tabular-nums text-overlay0">{tab.count}</span>
+                  )}
+                </button>
+              ))}
             </div>
 
             <div className="min-h-0 flex-1 overflow-y-auto">
@@ -569,12 +727,24 @@ export function ReaderPage({ book, onBack, devSpike = false }: ReaderPageProps) 
                 />
               )}
 
+              {sidebarTab === 'annotations' && (
+                <AnnotationsPanel
+                  annotations={annotations}
+                  loading={annotationsLoading}
+                  activeId={activeAnnotationId}
+                  onJump={(annotation) => void jumpToAnnotation(annotation)}
+                  onRemove={(annotation) => void handleRemoveAnnotation(annotation)}
+                  onNote={(annotation, note) => void handleAnnotationNote(annotation, note)}
+                />
+              )}
+
               {sidebarTab === 'search' && (
                 <div className="flex h-full flex-col">
                   <div className="shrink-0 border-b border-surface0/60 p-2">
                     <div className="flex items-center gap-1.5 rounded-md bg-surface0/50 px-2">
                       <Search size={12} className="text-overlay0" />
                       <input
+                        ref={searchInputRef}
                         autoFocus
                         value={searchQuery}
                         onChange={(event) => setSearchQuery(event.target.value)}
@@ -635,6 +805,9 @@ export function ReaderPage({ book, onBack, devSpike = false }: ReaderPageProps) 
             <ReaderView
               book={book}
               settings={settings}
+              annotations={annotations}
+              onAnnotate={(draft, mode) => void handleAnnotate(draft, mode)}
+              onAnnotationActivate={handleAnnotationActivate}
               onReady={(api) => void handleReady(api)}
               onRelocate={(state) => {
                 pageKeyRef.current = `${state.index}:${state.page}`

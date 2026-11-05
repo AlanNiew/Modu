@@ -580,4 +580,62 @@ mod tests {
         let probe = sniff_encoding(html).unwrap();
         assert_eq!(probe, "gbk");
     }
+
+    /// 畸形样本：必须返回 Err 而不是 panic / 展开成功。
+    /// 样本由 `scripts/gen_fixtures.py` 生成，缺失时跳过（CI 里先跑生成脚本）。
+    #[test]
+    fn rejects_malformed_epubs() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.books");
+        let cases = [
+            ("broken-empty.epub", "0 字节"),
+            ("broken-not-zip.epub", "非 zip"),
+            ("broken-truncated.epub", "截断 zip"),
+            ("broken-no-container.epub", "缺 container.xml"),
+            ("broken-bad-opf.epub", "OPF 非法 XML"),
+            ("broken-missing-opf.epub", "OPF 不存在"),
+        ];
+        let mut checked = 0;
+        for (name, note) in cases {
+            let path = dir.join(name);
+            if !path.exists() {
+                eprintln!("跳过缺失样本 {name}（{note}）");
+                continue;
+            }
+            let result = open(path.to_str().unwrap());
+            assert!(result.is_err(), "{name}（{note}）应当打开失败");
+            checked += 1;
+        }
+        assert!(checked > 0, "一个畸形样本都没找到：先跑 scripts/gen_fixtures.py");
+    }
+
+    /// 性能基准（仅仅是把耗时打出来，不做硬断言，避免 CI 机器差异导致红灯）。
+    #[test]
+    fn benches_large_book() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../.books/bench-large.epub");
+        if !path.exists() {
+            eprintln!("跳过基准：先跑 scripts/gen_fixtures.py");
+            return;
+        }
+        let started = std::time::Instant::now();
+        let book = open(path.to_str().unwrap()).expect("大书应当能打开");
+        let open_ms = started.elapsed().as_millis();
+        assert!(book.package.spine.len() >= 200, "基准书应当有 200 章");
+
+        let started = std::time::Instant::now();
+        let mut chars = 0usize;
+        for item in &book.package.spine {
+            if let Ok(text) = book.read_text(&item.path) {
+                chars += text.chars().count();
+            }
+        }
+        let read_ms = started.elapsed().as_millis();
+        eprintln!(
+            "bench-large: {} 章，{} 万字符，open {} ms，全文读取 {} ms",
+            book.package.spine.len(),
+            chars / 10_000,
+            open_ms,
+            read_ms
+        );
+    }
 }

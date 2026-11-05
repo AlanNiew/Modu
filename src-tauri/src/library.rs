@@ -640,6 +640,105 @@ mod tests {
         let short_hits = search(&db, first.id, "灯", 10).unwrap();
         assert!(!short_hits.is_empty(), "单字应回退到扫描");
     }
+
+    #[test]
+    fn annotations_roundtrip() {
+        let dir = temp_dir();
+        let db = Db::open(&dir.join("modu.db")).unwrap();
+        let sample = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join(".books")
+            .join("test-mandarin.epub");
+        if !sample.is_file() {
+            return;
+        }
+        let outcome = import(&db, &dir.join("covers"), &[sample.to_string_lossy().to_string()]);
+        let book_id = outcome[0].book.as_ref().expect("导入应成功").id;
+
+        let input = AnnotationInput {
+            locator: r#"{"v":1,"index":1,"fraction":0.42}"#.into(),
+            chapter_href: "OEBPS/Text/ch1.xhtml".into(),
+            chapter_title: Some("第一章".into()),
+            quote: "纸上的灯".into(),
+            prefix: Some("第一章".into()),
+            suffix: None,
+            occurrence: 0,
+            color: Some("green".into()),
+            note: Some("  记一笔  ".into()),
+        };
+        let added = annotation_add(&db, book_id, &input).unwrap();
+        assert_eq!(added.color, "green");
+        assert_eq!(added.note.as_deref(), Some("记一笔"), "备注应去首尾空白");
+
+        // 未知颜色回落默认黄；空引文拒绝
+        let unknown_color = AnnotationInput {
+            color: Some("rainbow".into()),
+            note: None,
+            ..input.clone()
+        };
+        assert_eq!(
+            annotation_add(&db, book_id, &unknown_color).unwrap().color,
+            "yellow"
+        );
+        let empty_quote = AnnotationInput {
+            quote: "   ".into(),
+            ..input.clone()
+        };
+        assert!(annotation_add(&db, book_id, &empty_quote).is_err());
+
+        assert_eq!(annotation_list(&db, book_id).unwrap().len(), 2);
+
+        let updated = annotation_update(&db, added.id, Some("改过的备注"), Some("blue")).unwrap();
+        assert_eq!(updated.note.as_deref(), Some("改过的备注"));
+        assert_eq!(updated.color, "blue");
+
+        // 传空字符串 = 清空备注
+        assert!(annotation_update(&db, added.id, Some(""), None)
+            .unwrap()
+            .note
+            .is_none());
+
+        annotation_remove(&db, added.id).unwrap();
+        assert_eq!(annotation_list(&db, book_id).unwrap().len(), 1);
+        assert!(annotation_remove(&db, added.id).is_err(), "重复删除应报不存在");
+    }
+
+    /// 导入 + 建 FTS 索引的耗时（打印用，不做硬断言）。
+    #[test]
+    fn benches_import_large_book() {
+        let sample = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join(".books")
+            .join("bench-large.epub");
+        if !sample.is_file() {
+            eprintln!("跳过导入基准：先跑 scripts/gen_fixtures.py");
+            return;
+        }
+        let dir = temp_dir();
+        let db = Db::open(&dir.join("modu.db")).unwrap();
+        let covers = dir.join("covers");
+
+        let started = std::time::Instant::now();
+        let outcomes = import(&db, &covers, &[sample.to_string_lossy().to_string()]);
+        let import_ms = started.elapsed().as_millis();
+
+        let book = outcomes[0].book.as_ref().expect("导入应成功");
+        assert_eq!(book.chapter_count, 200, "基准书 200 章");
+
+        let started = std::time::Instant::now();
+        let hits = search(&db, book.id, "夜色", 20).expect("搜索应当成功");
+        let search_ms = started.elapsed().as_millis();
+        assert!(!hits.is_empty(), "「夜色」应当能搜到");
+
+        eprintln!(
+            "bench-import: 200 章 · {} 字，导入+索引 {} ms，搜索 {} ms（{} 条）",
+            book.char_count,
+            import_ms,
+            search_ms,
+            hits.len()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -782,6 +881,164 @@ pub fn bookmark_note_set(db: &Db, bookmark_id: i64, note: Option<&str>) -> AppRe
         )?;
         if changed == 0 {
             return Err(AppError::NotFound(format!("书签不存在: {bookmark_id}")));
+        }
+        Ok(())
+    })
+}
+
+/// 一条批注：选中原文 + 定位信息 + 可选的备注。
+///
+/// 定位不用 CFI、也不用像素，存的是「引文 + 前后文 + 本页第几次出现」——
+/// 打开书时按当前排版重新解析成 Range，换字号/换主题都不会漂。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Annotation {
+    pub id: i64,
+    pub book_id: i64,
+    pub locator: String,
+    pub chapter_href: String,
+    pub chapter_title: Option<String>,
+    pub quote: String,
+    pub prefix: Option<String>,
+    pub suffix: Option<String>,
+    pub occurrence: i64,
+    pub color: String,
+    pub note: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+/// 前端提交的新批注（id / 时间戳由数据库生成）。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnnotationInput {
+    pub locator: String,
+    pub chapter_href: String,
+    pub chapter_title: Option<String>,
+    pub quote: String,
+    pub prefix: Option<String>,
+    pub suffix: Option<String>,
+    pub occurrence: i64,
+    pub color: Option<String>,
+    pub note: Option<String>,
+}
+
+/// 允许的划线颜色。前端传别的值一律落到黄色，避免脏数据进库。
+const ANNOTATION_COLORS: [&str; 4] = ["yellow", "green", "blue", "pink"];
+
+fn normalize_annotation_color(color: Option<&str>) -> String {
+    color
+        .map(str::trim)
+        .filter(|c| ANNOTATION_COLORS.contains(c))
+        .unwrap_or("yellow")
+        .to_owned()
+}
+
+const ANNOTATION_COLUMNS: &str = "id, book_id, locator, chapter_href, chapter_title, quote, \
+     prefix, suffix, occurrence, color, note, created_at, updated_at";
+
+fn row_to_annotation(row: &rusqlite::Row<'_>) -> rusqlite::Result<Annotation> {
+    Ok(Annotation {
+        id: row.get(0)?,
+        book_id: row.get(1)?,
+        locator: row.get(2)?,
+        chapter_href: row.get(3)?,
+        chapter_title: row.get(4)?,
+        quote: row.get(5)?,
+        prefix: row.get(6)?,
+        suffix: row.get(7)?,
+        occurrence: row.get(8)?,
+        color: row.get(9)?,
+        note: row.get(10)?,
+        created_at: row.get(11)?,
+        updated_at: row.get(12)?,
+    })
+}
+
+pub fn annotation_add(db: &Db, book_id: i64, input: &AnnotationInput) -> AppResult<Annotation> {
+    let quote = input.quote.trim();
+    if quote.is_empty() {
+        return Err(AppError::Internal("批注内容不能为空".into()));
+    }
+    let color = normalize_annotation_color(input.color.as_deref());
+    let note = input
+        .note
+        .as_deref()
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+        .map(str::to_owned);
+    let now = now_ms();
+    db.with(|conn| {
+        conn.execute(
+            "INSERT INTO annotations
+                 (book_id, locator, chapter_href, chapter_title, quote, prefix, suffix,
+                  occurrence, color, note, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)",
+            rusqlite::params![
+                book_id,
+                input.locator,
+                input.chapter_href,
+                input.chapter_title,
+                quote,
+                input.prefix,
+                input.suffix,
+                input.occurrence,
+                color,
+                note,
+                now
+            ],
+        )?;
+        let id = conn.last_insert_rowid();
+        let sql = format!("SELECT {ANNOTATION_COLUMNS} FROM annotations WHERE id = ?1");
+        Ok(conn.query_row(&sql, [id], row_to_annotation)?)
+    })
+}
+
+pub fn annotation_list(db: &Db, book_id: i64) -> AppResult<Vec<Annotation>> {
+    db.with(|conn| {
+        let sql = format!(
+            "SELECT {ANNOTATION_COLUMNS} FROM annotations WHERE book_id = ?1 \
+             ORDER BY created_at DESC"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map([book_id], row_to_annotation)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    })
+}
+
+/// 更新备注与颜色。`note` 传 `Some("")` 表示清空备注；传 `None` 表示不动备注。
+pub fn annotation_update(
+    db: &Db,
+    annotation_id: i64,
+    note: Option<&str>,
+    color: Option<&str>,
+) -> AppResult<Annotation> {
+    let set_note = note.is_some();
+    let note = note.map(str::trim).filter(|s| !s.is_empty());
+    let color = color.map(|c| normalize_annotation_color(Some(c)));
+    let now = now_ms();
+    db.with(|conn| {
+        let changed = conn.execute(
+            "UPDATE annotations SET
+                 note = CASE WHEN ?2 THEN ?3 ELSE note END,
+                 color = COALESCE(?4, color),
+                 updated_at = ?5
+             WHERE id = ?1",
+            rusqlite::params![annotation_id, set_note, note, color, now],
+        )?;
+        if changed == 0 {
+            return Err(AppError::NotFound(format!("批注不存在: {annotation_id}")));
+        }
+        let sql = format!("SELECT {ANNOTATION_COLUMNS} FROM annotations WHERE id = ?1");
+        Ok(conn.query_row(&sql, [annotation_id], row_to_annotation)?)
+    })
+}
+
+pub fn annotation_remove(db: &Db, annotation_id: i64) -> AppResult<()> {
+    db.with(|conn| {
+        let changed = conn.execute("DELETE FROM annotations WHERE id = ?1", [annotation_id])?;
+        if changed == 0 {
+            return Err(AppError::NotFound(format!("批注不存在: {annotation_id}")));
         }
         Ok(())
     })

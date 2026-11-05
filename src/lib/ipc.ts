@@ -1,5 +1,8 @@
 import { invoke } from '@tauri-apps/api/core'
 import type {
+  Annotation,
+  AnnotationColor,
+  AnnotationDraft,
   BookSummary,
   Bookmark,
   ImportOutcome,
@@ -94,3 +97,23 @@ export const searchBook = (
 
 export const setBookmarkNote = (bookmarkId: number, note: string | null) =>
   invoke<void>('bookmark_note_set', { bookmarkId, note })
+
+// ---------------------------------------------------------------------------
+// 批注（M4）
+// ---------------------------------------------------------------------------
+
+export const addAnnotation = (libraryId: number, input: AnnotationDraft) =>
+  invoke<Annotation>('annotation_add', { libraryId, input })
+
+export const listAnnotations = (libraryId: number) =>
+  invoke<Annotation[]>('annotation_list', { libraryId })
+
+/** `note` 传 `null` 表示不动备注，传空字符串表示清空。 */
+export const updateAnnotation = (
+  annotationId: number,
+  note: string | null,
+  color: AnnotationColor | null = null,
+) => invoke<Annotation>('annotation_update', { annotationId, note, color })
+
+export const removeAnnotation = (annotationId: number) =>
+  invoke<void>('annotation_remove', { annotationId })

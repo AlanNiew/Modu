@@ -6,7 +6,10 @@ use std::sync::Arc;
 use serde::Serialize;
 use tauri::State;
 
-use crate::library::{self, Bookmark, BookSummary, ImportOutcome, ListOptions, ProgressRecord};
+use crate::library::{
+    self, Annotation, AnnotationInput, Bookmark, BookSummary, ImportOutcome, ListOptions,
+    ProgressRecord,
+};
 use crate::epub::{self, Package};
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
@@ -260,4 +263,42 @@ pub fn bookmark_note_set(
     note: Option<String>,
 ) -> AppResult<()> {
     library::bookmark_note_set(&state.db, bookmark_id, note.as_deref())
+}
+
+// ---------------------------------------------------------------------------
+// 批注（M4）
+// ---------------------------------------------------------------------------
+
+/// 新建一条划线/批注。`library_id` 是书库主键，批注挂在书上而不是打开的句柄上。
+#[tauri::command]
+pub fn annotation_add(
+    state: State<'_, AppState>,
+    library_id: i64,
+    input: AnnotationInput,
+) -> AppResult<Annotation> {
+    library::annotation_add(&state.db, library_id, &input)
+}
+
+#[tauri::command]
+pub fn annotation_list(state: State<'_, AppState>, library_id: i64) -> AppResult<Vec<Annotation>> {
+    library::annotation_list(&state.db, library_id)
+}
+
+/// 更新备注/颜色。`note: Some("")` 表示清空备注。
+#[tauri::command]
+pub fn annotation_update(
+    state: State<'_, AppState>,
+    annotation_id: i64,
+    note: Option<String>,
+    color: Option<String>,
+) -> AppResult<Annotation> {
+    library::annotation_update(&state.db, annotation_id, note.as_deref(), color.as_deref())
+}
+
+#[tauri::command]
+pub fn annotation_remove(
+    state: State<'_, AppState>,
+    annotation_id: i64,
+) -> AppResult<()> {
+    library::annotation_remove(&state.db, annotation_id)
 }

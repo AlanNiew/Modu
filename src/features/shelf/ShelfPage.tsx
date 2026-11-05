@@ -1,5 +1,5 @@
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { FolderOpen, Library, Search, X } from 'lucide-react'
+import { FolderOpen, Keyboard, Library, Search, X } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { TitleBar, TitleBarButton } from '../../components/TitleBar'
@@ -10,6 +10,8 @@ import { BookCard } from './BookCard'
 
 interface ShelfPageProps {
   onOpenBook: (book: BookSummary) => void
+  /** 打开快捷键帮助面板（由 App 统一持有 Dialog）。 */
+  onOpenHelp: () => void
 }
 
 /** 卡片最小宽度与间距：列数由容器宽度反算，不写死每行几本。 */
@@ -58,7 +60,7 @@ function useGridMetrics(ref: React.RefObject<HTMLDivElement | null>): GridMetric
   }, [width])
 }
 
-export function ShelfPage({ onOpenBook }: ShelfPageProps) {
+export function ShelfPage({ onOpenBook, onOpenHelp }: ShelfPageProps) {
   const books = useLibrary((state) => state.books)
   const loading = useLibrary((state) => state.loading)
   const importing = useLibrary((state) => state.importing)
@@ -133,6 +135,9 @@ export function ShelfPage({ onOpenBook }: ShelfPageProps) {
               onClick={() => void importFromDialog()}
             >
               <FolderOpen size={15} />
+            </TitleBarButton>
+            <TitleBarButton title="快捷键与帮助（F1）" onClick={onOpenHelp}>
+              <Keyboard size={15} />
             </TitleBarButton>
           </>
         }

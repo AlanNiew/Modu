@@ -115,3 +115,43 @@ export interface SearchHit {
   /** 命中位置（字符偏移，仅作排序/参考） */
   offset: number
 }
+
+// ---------------------------------------------------------------------------
+// 批注（M4）
+// ---------------------------------------------------------------------------
+
+export type AnnotationColor = 'yellow' | 'green' | 'blue' | 'pink'
+
+/** 一条划线/批注，字段与 Rust `library::Annotation` 对齐。 */
+export interface Annotation {
+  id: number
+  bookId: number
+  /** `{"v":1,"index":章序号,"fraction":0..1}` */
+  locator: string
+  /** 章内相对路径，用来判断画在哪一章 */
+  chapterHref: string
+  chapterTitle: string | null
+  /** 选中原文（空白已压缩） */
+  quote: string
+  prefix: string | null
+  suffix: string | null
+  /** 同章内第几次出现，处理重复引文 */
+  occurrence: number
+  color: AnnotationColor
+  note: string | null
+  createdAt: number
+  updatedAt: number
+}
+
+/** 新建批注时提交的选择器（id / 时间戳由后端生成）。 */
+export interface AnnotationDraft {
+  locator: string
+  chapterHref: string
+  chapterTitle?: string | null
+  quote: string
+  prefix: string | null
+  suffix: string | null
+  occurrence: number
+  color?: AnnotationColor
+  note?: string | null
+}

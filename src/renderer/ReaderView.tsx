@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef } from 'react'
 import './vendor/foliate/view.js'
 import type { FoliateRelocateDetail, FoliateView } from './vendor/foliate/view.js'
-import type { OpenedBookInfo } from '../lib/types'
+import type { Annotation, AnnotationDraft, OpenedBookInfo } from '../lib/types'
 import { createFoliateBook, type FoliateBook } from './foliateBook'
 import { buildReadingCss, type ReadingSettings } from './theme'
 
@@ -17,6 +17,8 @@ export interface ReaderApi {
   getVisibleText(maxLength?: number): string
   /** 跳到某章并高亮/滚动到一段引文（全文搜索用）；找不到返回 false */
   revealText(index: number, quote: string): Promise<boolean>
+  /** 跳转到某条批注：切章 + 滚动到引文 + 选中它 */
+  revealAnnotation(annotation: Annotation): Promise<boolean>
   /** 仅供 dev 自检：向当前章节文档派发一次滚轮事件，返回是否派发成功 */
   dispatchWheel(deltaY: number): boolean
 }
@@ -36,29 +38,57 @@ export interface RelocateState {
 interface ReaderViewProps {
   book: OpenedBookInfo
   settings: ReadingSettings
+  /** 本书全部批注；按当前章节过滤后画在正文上 */
+  annotations?: Annotation[]
   onReady?: (api: ReaderApi) => void
   onRelocate?: (state: RelocateState) => void
   onLoad?: (state: { index: number }) => void
   onExternalLink?: (href: string) => void
   onError?: (error: unknown) => void
+  /** 用户在正文里划线/写批注。mode=note 表示希望直接进备注编辑 */
+  onAnnotate?: (draft: AnnotationDraft, mode: 'highlight' | 'note') => void
+  /** 点了已有划线 */
+  onAnnotationActivate?: (id: number) => void
 }
 
 export function ReaderView({
   book,
   settings,
+  annotations,
   onReady,
   onRelocate,
   onLoad,
   onExternalLink,
   onError,
+  onAnnotate,
+  onAnnotationActivate,
 }: ReaderViewProps) {
   const hostRef = useRef<HTMLDivElement>(null)
   const viewRef = useRef<FoliateView | null>(null)
   const settingsRef = useRef(settings)
-  const callbacksRef = useRef({ onReady, onRelocate, onLoad, onExternalLink, onError })
+  const annotationsRef = useRef<Annotation[]>(annotations ?? [])
+  const docRef = useRef<Document | null>(null)
+  const renderAnnotationsRef = useRef<((doc: Document) => void) | null>(null)
+  const callbacksRef = useRef({
+    onReady,
+    onRelocate,
+    onLoad,
+    onExternalLink,
+    onError,
+    onAnnotate,
+    onAnnotationActivate,
+  })
 
   settingsRef.current = settings
-  callbacksRef.current = { onReady, onRelocate, onLoad, onExternalLink, onError }
+  callbacksRef.current = {
+    onReady,
+    onRelocate,
+    onLoad,
+    onExternalLink,
+    onError,
+    onAnnotate,
+    onAnnotationActivate,
+  }
 
   const applySettings = useCallback((view: FoliateView, next: ReadingSettings) => {
     const renderer = view.renderer
@@ -108,6 +138,33 @@ export function ReaderView({
         if (!doc) return ''
         return (doc.body?.innerText ?? '').replace(/\s+/g, ' ').trim().slice(0, maxLength)
       },
+      revealAnnotation: async (annotation) => {
+        let index = 0
+        try {
+          index = Number((JSON.parse(annotation.locator) as { index?: number }).index ?? 0)
+        } catch {
+          index = 0
+        }
+        await goToChapter(index)
+        const doc = await waitForChapterDoc(view, index)
+        if (!doc) return false
+        const docIndex = buildDocIndex(doc)
+        if (!docIndex) return false
+        const range = locateQuote(
+          doc,
+          docIndex,
+          annotation.quote,
+          annotation.prefix,
+          annotation.suffix,
+          annotation.occurrence,
+        )
+        if (!range) return false
+        await view.renderer?.scrollToAnchor?.(range)
+        await new Promise((resolve) => window.setTimeout(resolve, 220))
+        const after = view.renderer?.getContents?.()[0]?.doc
+        renderAnnotationsRef.current?.(after ?? doc)
+        return true
+      },
       dispatchWheel: (deltaY) => {
         const doc = view.renderer?.getContents?.()[0]?.doc
         const target = (doc?.body ?? doc?.documentElement) as EventTarget | undefined
@@ -147,6 +204,257 @@ export function ReaderView({
       },
     }
 
+    // ------------------------------------------------------------------
+    // 批注：正文渲染色块、选区工具条、点击命中
+    // ------------------------------------------------------------------
+    let lastRelocate = { index: 0, fraction: 0 }
+    let annoRanges = new Map<number, { startRaw: number; endRaw: number }>()
+    let lastRenderedDoc: Document | null = null
+    let toolbar: HTMLDivElement | null = null
+
+    const hideToolbar = () => {
+      toolbar?.remove()
+      toolbar = null
+    }
+
+    const spinePath = (index: number) => book.package.spine[index]?.path ?? ''
+
+    const renderAnnotations = (doc: Document) => {
+      docRef.current = doc
+      lastRenderedDoc = doc
+      const docIndex = buildDocIndex(doc)
+      const win = doc.defaultView as (Window & typeof globalThis) | null
+      if (!docIndex || !win) return
+      ensureAnnotationStyles(doc)
+      annoRanges = new Map()
+      const grouped = new Map<string, Range[]>()
+      const chapterPath = spinePath(lastRelocate.index)
+      for (const annotation of annotationsRef.current) {
+        if (annotation.chapterHref !== chapterPath) continue
+        const range = locateQuote(
+          doc,
+          docIndex,
+          annotation.quote,
+          annotation.prefix,
+          annotation.suffix,
+          annotation.occurrence,
+        )
+        if (!range) continue
+        const startRaw = rawOffset(docIndex, range.startContainer, range.startOffset)
+        const endRaw = rawOffset(docIndex, range.endContainer, range.endOffset)
+        if (startRaw == null || endRaw == null) continue
+        annoRanges.set(annotation.id, { startRaw, endRaw })
+        const list = grouped.get(annotation.color) ?? []
+        list.push(range)
+        grouped.set(annotation.color, list)
+      }
+      const css = win.CSS as typeof CSS | undefined
+      if (css?.highlights && typeof win.Highlight === 'function') {
+        for (const color of ANNOTATION_COLORS) css.highlights.delete(`modu-anno-${color}`)
+        for (const [color, ranges] of grouped) {
+          css.highlights.set(`modu-anno-${color}`, new win.Highlight(...ranges))
+        }
+      }
+    }
+    renderAnnotationsRef.current = renderAnnotations
+
+    // 开发期自动化探针：CDP 拿不到 closed shadow root 里的 iframe 文档，
+    // 所以把「划线→工具条→点颜色」这条链路暴露成普通函数供 CDP 调用。
+    if (import.meta.env.DEV) {
+      const probe = {
+        selectQuote(needle: string): string {
+          const doc = docRef.current
+          if (!doc) return 'no-doc'
+          const docIndex = buildDocIndex(doc)
+          if (!docIndex) return 'no-index'
+          const at = docIndex.flat.indexOf(needle)
+          if (at < 0) return 'not-found'
+          const range = rangeFromFlat(doc, docIndex, at, at + needle.length)
+          if (!range) return 'no-range'
+          const win = doc.defaultView
+          const selection = win?.getSelection()
+          if (!win || !selection) return 'no-selection'
+          selection.removeAllRanges()
+          selection.addRange(range)
+          const rect = range.getBoundingClientRect()
+          onDocMouseUp(
+            new win.MouseEvent('mouseup', {
+              bubbles: true,
+              button: 0,
+              clientX: Math.round(rect.left + 1),
+              clientY: Math.round(rect.bottom - 1),
+            }),
+            doc,
+          )
+          return `ok:${docIndex.flat.slice(at, at + needle.length)}`
+        },
+        toolbar(): string | null {
+          const box = docRef.current?.querySelector('[data-modu-toolbar]')
+          return box ? (box.textContent ?? '') : null
+        },
+        clickToolbar(color: string): string {
+          const box = docRef.current?.querySelector('[data-modu-toolbar]')
+          if (!box) return 'no-toolbar'
+          const order = ['yellow', 'green', 'blue', 'pink', 'note'] as const
+          const index = order.indexOf(color as (typeof order)[number])
+          if (index < 0) return 'bad-color'
+          const button = box.querySelectorAll('button')[index] as HTMLButtonElement | undefined
+          if (!button) return 'no-button'
+          button.click()
+          return 'clicked'
+        },
+        highlights(): unknown {
+          const win = docRef.current?.defaultView as
+            | (Window & { CSS?: { highlights?: Map<string, unknown> } })
+            | undefined
+          return {
+            registered: Array.from(win?.CSS?.highlights?.keys?.() ?? []),
+            ranges: annoRanges.size,
+          }
+        },
+        clear(): void {
+          hideToolbar()
+        },
+        debugAnnotation(id: number): unknown {
+          const doc = docRef.current
+          if (!doc) return 'no-doc'
+          const docIndex = buildDocIndex(doc)
+          const annotation = annotationsRef.current.find((item) => item.id === id)
+          const chapterPath = spinePath(lastRelocate.index)
+          if (!docIndex || !annotation) {
+            return { hasIndex: !!docIndex, hasAnnotation: !!annotation }
+          }
+          const range = locateQuote(
+            doc,
+            docIndex,
+            annotation.quote,
+            annotation.prefix,
+            annotation.suffix,
+            annotation.occurrence,
+          )
+          return {
+            chapterPath,
+            annHref: annotation.chapterHref,
+            sameChapter: annotation.chapterHref === chapterPath,
+            located: !!range,
+            quote: annotation.quote,
+            occurrence: annotation.occurrence,
+            total: annotationsRef.current.length,
+            lastRelocate,
+          }
+        },
+      }
+      ;(window as unknown as { __moduAnno?: typeof probe }).__moduAnno = probe
+    }
+
+    const hitAnnotation = (doc: Document, docIndex: DocIndex, x: number, y: number) => {
+      const caret = (
+        doc as Document & { caretRangeFromPoint?: (x: number, y: number) => Range | null }
+      ).caretRangeFromPoint?.(x, y)
+      if (!caret) return null
+      const at = rawOffset(docIndex, caret.startContainer, caret.startOffset)
+      if (at == null) return null
+      for (const [id, span] of annoRanges) {
+        if (at >= span.startRaw && at <= span.endRaw) return id
+      }
+      return null
+    }
+
+    const onDocMouseUp = (event: MouseEvent, doc: Document) => {
+      if (event.button !== 0) return
+      // 点在工具条上不要重建（工具条自己的 mousedown 已 preventDefault）
+      if (toolbar && toolbar.contains(event.target as Node)) return
+      hideToolbar()
+      const win = doc.defaultView
+      const selection = win?.getSelection()
+      if (!win || !selection || selection.isCollapsed) return
+      const text = selection.toString()
+      if (!text.trim()) return
+      const docIndex = buildDocIndex(doc)
+      if (!docIndex) return
+      const range = selection.getRangeAt(0)
+      const startRaw = rawOffset(docIndex, range.startContainer, range.startOffset)
+      const endRaw = rawOffset(docIndex, range.endContainer, range.endOffset)
+      if (startRaw == null || endRaw == null || endRaw <= startRaw) return
+
+      const flatStart = flatIndexOfRaw(docIndex.map, startRaw)
+      const flatEnd = flatIndexOfRaw(docIndex.map, endRaw)
+      const quote = docIndex.flat.slice(flatStart, flatEnd).trim()
+      if (!quote) return
+      const prefix = docIndex.flat.slice(Math.max(0, flatStart - 32), flatStart)
+      const suffix = docIndex.flat.slice(flatEnd, Math.min(docIndex.flat.length, flatEnd + 32))
+      let occurrence = 0
+      for (let at = docIndex.flat.indexOf(quote); at >= 0 && at < flatStart; ) {
+        occurrence += 1
+        at = docIndex.flat.indexOf(quote, at + quote.length)
+      }
+
+      const draft: AnnotationDraft = {
+        locator: JSON.stringify({
+          v: 1,
+          index: lastRelocate.index,
+          fraction: lastRelocate.fraction,
+        }),
+        chapterHref: spinePath(lastRelocate.index),
+        quote,
+        prefix: prefix || null,
+        suffix: suffix || null,
+        occurrence,
+        color: 'yellow',
+      }
+
+      const rect = range.getBoundingClientRect()
+      const box = doc.createElement('div')
+      box.setAttribute('data-modu-toolbar', '1')
+      box.style.cssText = [
+        'position:fixed',
+        `left:${Math.round(rect.left + rect.width / 2)}px`,
+        `top:${Math.round(rect.bottom + 10)}px`,
+        'transform:translateX(-50%)',
+        'display:flex',
+        'align-items:center',
+        'gap:6px',
+        'padding:6px 8px',
+        'border-radius:10px',
+        'background:rgba(24,24,37,.96)',
+        'box-shadow:0 6px 20px rgba(0,0,0,.45)',
+        'border:1px solid rgba(255,255,255,.10)',
+        'z-index:2147483000',
+        'font:12px/1 system-ui, sans-serif',
+        'color:#cdd6f4',
+        'user-select:none',
+      ].join(';')
+      box.addEventListener('mousedown', (e) => e.preventDefault())
+
+      for (const color of ANNOTATION_COLORS) {
+        const dot = doc.createElement('button')
+        dot.type = 'button'
+        dot.title = ANNOTATION_LABELS[color]
+        dot.style.cssText = `width:18px;height:18px;border-radius:9999px;border:1px solid rgba(0,0,0,.25);background:${ANNOTATION_SWATCHES[color]};cursor:pointer`
+        dot.addEventListener('click', () => {
+          callbacksRef.current.onAnnotate?.({ ...draft, color }, 'highlight')
+          hideToolbar()
+          selection.removeAllRanges()
+        })
+        box.appendChild(dot)
+      }
+
+      const noteButton = doc.createElement('button')
+      noteButton.type = 'button'
+      noteButton.textContent = '写批注'
+      noteButton.style.cssText =
+        'height:20px;padding:0 8px;border-radius:6px;border:1px solid rgba(137,180,250,.45);background:rgba(137,180,250,.16);color:#cdd6f4;font:12px/1 system-ui, sans-serif;cursor:pointer'
+      noteButton.addEventListener('click', () => {
+        callbacksRef.current.onAnnotate?.({ ...draft, color: 'yellow' }, 'note')
+        hideToolbar()
+        selection.removeAllRanges()
+      })
+      box.appendChild(noteButton)
+
+      doc.body.appendChild(box)
+      toolbar = box
+    }
+
     // 滚轮翻页：分页模式下正文本身不滚动，滚轮累积到阈值就翻一页。
     // - 触控板惯性会连续发很多小 delta，必须累积 + 冷却，否则一滑翻好几页
     // - deltaMode 1=行、2=页，要换算成像素量级再比较
@@ -160,6 +468,7 @@ export function ReaderView({
       const target = event.target as HTMLElement | null
       if (target?.closest('input, textarea, select')) return
       event.preventDefault()
+      hideToolbar()
 
       const now = performance.now()
       if (now < wheelLockedUntil) return
@@ -196,22 +505,38 @@ export function ReaderView({
         renderer.addEventListener('relocate', ((event: CustomEvent<FoliateRelocateDetail>) => {
           const detail = event.detail
           const range = detail.range as Range | undefined
-          callbacksRef.current.onRelocate?.({
+          lastRelocate = {
             index: Number(detail.index ?? 0),
             fraction: Number(detail.fraction ?? 0),
+          }
+          callbacksRef.current.onRelocate?.({
+            index: lastRelocate.index,
+            fraction: lastRelocate.fraction,
             page: Number(renderer.page ?? 1),
             pages: Number(renderer.pages ?? 1),
             excerpt: (range?.toString() ?? '').replace(/\s+/g, ' ').trim().slice(0, 120),
           })
+          // 换章后按新的章节 path 重新画批注（同章翻页不重复走文本树）
+          const currentDoc = renderer.getContents?.()[0]?.doc
+          if (currentDoc && currentDoc !== lastRenderedDoc) renderAnnotations(currentDoc)
         }) as EventListener)
 
         // 左右两侧点按翻页（foliate 本身只处理链接点击）。
         const onDocClick = (event: MouseEvent, doc: Document) => {
           if (event.defaultPrevented || event.button !== 0) return
           const target = event.target as HTMLElement | null
-          if (target?.closest('a, button, input, textarea, select')) return
+          if (target?.closest('a, button, input, textarea, select, [data-modu-toolbar]')) return
           const selection = doc.defaultView?.getSelection()?.toString() ?? ''
           if (selection.length > 0) return
+          // 先看是不是点在已有划线上：命中就打开那条批注，不翻页
+          const docIndex = buildDocIndex(doc)
+          if (docIndex) {
+            const hit = hitAnnotation(doc, docIndex, event.clientX, event.clientY)
+            if (hit != null) {
+              callbacksRef.current.onAnnotationActivate?.(hit)
+              return
+            }
+          }
           const rect = view.getBoundingClientRect()
           if (rect.width <= 0) return
           const ratio = (event.clientX - rect.left) / rect.width
@@ -222,9 +547,21 @@ export function ReaderView({
         view.addEventListener('load', ((event: CustomEvent<{ index: number; doc: Document }>) => {
           const detail = event.detail
           callbacksRef.current.onLoad?.({ index: Number(detail.index ?? 0) })
-          detail.doc?.addEventListener('click', (clickEvent) => onDocClick(clickEvent, detail.doc))
+          hideToolbar()
+          const doc = detail.doc
+          doc?.addEventListener('click', (clickEvent) => onDocClick(clickEvent, doc))
           // passive: false —— 需要 preventDefault 阻止 iframe 自身滚动
-          detail.doc?.addEventListener('wheel', onDocWheel, { passive: false })
+          doc?.addEventListener('wheel', onDocWheel, { passive: false })
+          doc?.addEventListener('mouseup', (upEvent) => onDocMouseUp(upEvent, doc))
+          doc?.addEventListener('keydown', (keyEvent) => {
+            if (keyEvent.key === 'Escape') hideToolbar()
+          })
+          if (doc) {
+            docRef.current = doc
+            // 章节刚加载时 relocate 还没发，先用上一章位置渲染一版；
+            // 随后 relocate 到达会再渲染一次（见 onRelocate 里的调用）。
+            renderAnnotations(doc)
+          }
         }) as EventListener)
 
         applySettings(view, settingsRef.current)
@@ -256,6 +593,13 @@ export function ReaderView({
     const view = viewRef.current
     if (view?.renderer) applySettings(view, settings)
   }, [settings, applySettings])
+
+  // 批注增删改后重画当前章节（不用重建阅读器）
+  useEffect(() => {
+    annotationsRef.current = annotations ?? []
+    const doc = docRef.current
+    if (doc) renderAnnotationsRef.current?.(doc)
+  }, [annotations])
 
   // 键盘翻页：左右方向键 / PageUp / PageDown / 空格
   useEffect(() => {
@@ -312,11 +656,56 @@ export function ReaderView({
  * 它不改 DOM，不会破坏 foliate 的分页测量；旧内核退回 <mark> 包裹。
  */
 function findQuoteRange(doc: Document, quote: string): Range | null {
-  const needle = quote.replace(/\s+/g, ' ').trim()
-  if (!needle || !doc.body) return null
+  const needle = normalizeQuote(quote)
+  if (!needle) return null
+  const index = buildDocIndex(doc)
+  if (!index) return null
 
+  let at = index.flat.indexOf(needle)
+  if (at < 0 && needle.length > 10) {
+    // 跨节点丢字/异体标点时退一步：用前 10 个字定位
+    at = index.flat.indexOf(needle.slice(0, 10))
+  }
+  if (at < 0) return null
+  return rangeFromFlat(doc, index, at, at + needle.length)
+}
+
+// ---------------------------------------------------------------------------
+// 批注：文本索引与定位
+// ---------------------------------------------------------------------------
+
+const ANNOTATION_COLORS = ['yellow', 'green', 'blue', 'pink'] as const
+
+const ANNOTATION_LABELS: Record<string, string> = {
+  yellow: '黄色划线',
+  green: '绿色划线',
+  blue: '蓝色划线',
+  pink: '粉色划线',
+}
+
+const ANNOTATION_SWATCHES: Record<string, string> = {
+  yellow: 'rgba(249, 226, 175, .95)',
+  green: 'rgba(166, 227, 161, .95)',
+  blue: 'rgba(137, 180, 250, .95)',
+  pink: 'rgba(245, 194, 231, .95)',
+}
+
+interface DocIndex {
+  nodes: { node: Text; start: number; end: number }[]
+  /** 压缩后每个字符对应的原始字符下标 */
+  map: number[]
+  /** 压缩空白后的全文 */
+  flat: string
+}
+
+function normalizeQuote(text: string): string {
+  return text.replace(/\s+/g, ' ').trim()
+}
+
+function buildDocIndex(doc: Document): DocIndex | null {
+  if (!doc.body) return null
   const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT)
-  const nodes: { node: Text; start: number; end: number }[] = []
+  const nodes: DocIndex['nodes'] = []
   const map: number[] = []
   let raw = ''
   let flat = ''
@@ -338,24 +727,115 @@ function findQuoteRange(doc: Document, quote: string): Range | null {
       }
     }
   }
+  return { nodes, map, flat }
+}
 
-  let at = flat.indexOf(needle)
-  if (at < 0 && needle.length > 10) {
-    // 跨节点丢字/异体标点时退一步：用前 10 个字定位
-    at = flat.indexOf(needle.slice(0, 10))
-  }
-  if (at < 0) return null
-
-  const startRaw = map[at]
-  const endRaw = map[Math.min(at + needle.length - 1, map.length - 1)] + 1
-  const startNode = nodes.find((n) => startRaw >= n.start && startRaw < n.end)
-  const endNode = nodes.find((n) => endRaw > n.start && endRaw <= n.end)
+/** flat 区间 → DOM Range；跨节点也能正确拼出来 */
+function rangeFromFlat(
+  doc: Document,
+  index: DocIndex,
+  start: number,
+  endExclusive: number,
+): Range | null {
+  if (start < 0 || endExclusive > index.map.length || endExclusive <= start) return null
+  const startRaw = index.map[start]
+  const endRaw = index.map[endExclusive - 1] + 1
+  const startNode = index.nodes.find((n) => startRaw >= n.start && startRaw < n.end)
+  const endNode = index.nodes.find((n) => endRaw > n.start && endRaw <= n.end)
   if (!startNode || !endNode) return null
-
   const range = doc.createRange()
   range.setStart(startNode.node, startRaw - startNode.start)
   range.setEnd(endNode.node, endRaw - endNode.start)
   return range
+}
+
+function rawOffset(index: DocIndex, node: Node, offset: number): number | null {
+  const entry = index.nodes.find((n) => n.node === node)
+  return entry ? entry.start + offset : null
+}
+
+/** map 是单调递增数组：返回第一个 map[i] >= raw 的 i */
+function flatIndexOfRaw(map: number[], raw: number): number {
+  let low = 0
+  let high = map.length
+  while (low < high) {
+    const mid = (low + high) >> 1
+    if (map[mid] < raw) low = mid + 1
+    else high = mid
+  }
+  return low
+}
+
+/**
+ * 按批注存的选择器重新定位：引文 + 前后文 + 同章第几次出现。
+ *
+ * 先找全部出现位置，用前后文筛一遍，再按 occurrence 取第 N 个；
+ * 前后文对不上（书被改过、排版插入异体字）时退化为纯出现序号。
+ */
+function locateQuote(
+  doc: Document,
+  index: DocIndex,
+  quote: string,
+  prefix: string | null,
+  suffix: string | null,
+  occurrence: number,
+): Range | null {
+  const needle = normalizeQuote(quote)
+  if (!needle) return null
+  const positions: number[] = []
+  for (
+    let at = index.flat.indexOf(needle);
+    at >= 0;
+    at = index.flat.indexOf(needle, at + needle.length)
+  ) {
+    positions.push(at)
+  }
+  if (positions.length === 0) {
+    if (needle.length > 10) {
+      return locateQuote(doc, index, needle.slice(0, 10), prefix, suffix, 0)
+    }
+    return null
+  }
+  const before = normalizeQuote(prefix ?? '')
+  const after = normalizeQuote(suffix ?? '')
+  const matched = positions.filter((at) => {
+    const okPrefix = !before || index.flat.slice(Math.max(0, at - before.length), at) === before
+    const okSuffix =
+      !after ||
+      index.flat.slice(at + needle.length, at + needle.length + after.length) === after
+    return okPrefix && okSuffix
+  })
+  const pool = matched.length > 0 ? matched : positions
+  const pick = pool[occurrence] ?? pool[0]
+  if (pick == null) return null
+  return rangeFromFlat(doc, index, pick, pick + needle.length)
+}
+
+async function waitForChapterDoc(
+  view: FoliateView,
+  index: number,
+  attempts = 20,
+): Promise<Document | null> {
+  for (let i = 0; i < attempts; i += 1) {
+    const contents = view.renderer?.getContents?.() ?? []
+    const current = contents[0]
+    if (current?.doc && Number(current.index) === index) return current.doc
+    await new Promise((resolve) => window.setTimeout(resolve, 100))
+  }
+  return null
+}
+
+function ensureAnnotationStyles(doc: Document): void {
+  if (doc.getElementById('modu-anno-style')) return
+  const style = doc.createElement('style')
+  style.id = 'modu-anno-style'
+  style.textContent = [
+    '::highlight(modu-anno-yellow) { background-color: rgba(249, 226, 175, .42); }',
+    '::highlight(modu-anno-green) { background-color: rgba(166, 227, 161, .42); }',
+    '::highlight(modu-anno-blue) { background-color: rgba(137, 180, 250, .40); }',
+    '::highlight(modu-anno-pink) { background-color: rgba(245, 194, 231, .42); }',
+  ].join('\n')
+  doc.head.appendChild(style)
 }
 
 function markQuote(doc: Document, range: Range): void {

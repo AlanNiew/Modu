@@ -95,6 +95,10 @@ pub fn run() {
             commands::bookmark_remove,
             commands::bookmark_note_set,
             commands::book_search,
+            commands::annotation_add,
+            commands::annotation_list,
+            commands::annotation_update,
+            commands::annotation_remove,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
