@@ -15,9 +15,10 @@ const TS_CHARACTERS: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/dictionary/TSCharacters.txt"
 ));
-const TS_PHRASES: &str = include_str!(
-    concat!(env!("CARGO_MANIFEST_DIR"), "/dictionary/TSPhrases.txt")
-);
+const TS_PHRASES: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/dictionary/TSPhrases.txt"
+));
 
 /// 短语最大匹配窗口（字符数）。实测词典最长 key 为 10，留一点余量。
 const MAX_PHRASE_LEN: usize = 12;

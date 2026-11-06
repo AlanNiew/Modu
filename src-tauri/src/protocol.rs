@@ -15,9 +15,9 @@
 
 use std::sync::Arc;
 
-use tauri::http::{header, Request, Response, StatusCode};
+use tauri::http::{Request, Response, StatusCode, header};
 
-use crate::epub::{self, mime_for, OpenedBook};
+use crate::epub::{self, OpenedBook, mime_for};
 use crate::state::AppState;
 
 /// 书架封面在协议里的保留前缀，不可能是合法的 bookId。
@@ -28,10 +28,16 @@ const FONTS_PREFIX: &str = "__fonts";
 
 pub fn handle(state: &AppState, request: &Request<Vec<u8>>) -> Response<Vec<u8>> {
     let path = request.uri().path().trim_start_matches('/');
-    if let Some(file) = path.strip_prefix(COVERS_PREFIX).and_then(|rest| rest.strip_prefix('/')) {
+    if let Some(file) = path
+        .strip_prefix(COVERS_PREFIX)
+        .and_then(|rest| rest.strip_prefix('/'))
+    {
         return serve_cover(state, file);
     }
-    if let Some(file) = path.strip_prefix(FONTS_PREFIX).and_then(|rest| rest.strip_prefix('/')) {
+    if let Some(file) = path
+        .strip_prefix(FONTS_PREFIX)
+        .and_then(|rest| rest.strip_prefix('/'))
+    {
         return serve_font(state, file, request);
     }
     let Some((book_id, resource)) = path.split_once('/') else {
@@ -72,11 +78,7 @@ fn serve_cover(state: &AppState, file: &str) -> Response<Vec<u8>> {
 }
 
 /// 只允许纯文件名 + 已知字体后缀；字体数据缓存一小时（可能被重装替换）。
-fn serve_font(
-    state: &AppState,
-    file: &str,
-    request: &Request<Vec<u8>>,
-) -> Response<Vec<u8>> {
+fn serve_font(state: &AppState, file: &str, request: &Request<Vec<u8>>) -> Response<Vec<u8>> {
     let decoded = epub::percent_decode(file);
     let mime = match decoded.rsplit('.').next() {
         Some("ttf") => "font/ttf",
@@ -108,7 +110,9 @@ fn serve_font(
                 // 每次章节 iframe 加载都会走一遍磁盘读，成本可忽略。
                 .header(header::CACHE_CONTROL, "no-store")
                 .body(bytes)
-                .unwrap_or_else(|_| error_response(StatusCode::INTERNAL_SERVER_ERROR, "构造响应失败"))
+                .unwrap_or_else(|_| {
+                    error_response(StatusCode::INTERNAL_SERVER_ERROR, "构造响应失败")
+                })
         }
         Err(err) => not_found(&format!("字体读取失败: {err}")),
     }
@@ -132,7 +136,9 @@ fn serve(book: Arc<OpenedBook>, entry: String, request: &Request<Vec<u8>>) -> Re
                 // bookId 由文件内容算出，同一 URL 的内容在本次安装里不会变化。
                 .header(header::CACHE_CONTROL, "public, max-age=31536000, immutable")
                 .body(bytes)
-                .unwrap_or_else(|_| error_response(StatusCode::INTERNAL_SERVER_ERROR, "构造响应失败"))
+                .unwrap_or_else(|_| {
+                    error_response(StatusCode::INTERNAL_SERVER_ERROR, "构造响应失败")
+                })
         }
         Err(err) => error_response(StatusCode::NOT_FOUND, &err.to_string()),
     }

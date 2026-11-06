@@ -95,7 +95,9 @@ pub fn install(data_dir: &Path, src_path: &str) -> AppResult<InstalledFont> {
             .unwrap_or_else(|| "imported-font".into())
     });
     if family.is_empty() {
-        return Err(AppError::Validation("无法从字体文件中解析出字体名，文件可能已损坏".into()));
+        return Err(AppError::Validation(
+            "无法从字体文件中解析出字体名，文件可能已损坏".into(),
+        ));
     }
 
     let dir = fonts_dir(data_dir);
@@ -176,8 +178,9 @@ fn be_u16(bytes: &[u8], offset: usize) -> Option<u16> {
 }
 
 fn be_u32(bytes: &[u8], offset: usize) -> Option<u32> {
-    Some(u32::from(be_u16(bytes, offset)?) << 16
-        | u32::from(be_u16(bytes, offset.checked_add(2)?)?))
+    Some(
+        u32::from(be_u16(bytes, offset)?) << 16 | u32::from(be_u16(bytes, offset.checked_add(2)?)?),
+    )
 }
 
 /// 在 sfnt 数据里找到 `tag` 表；`base` 是 sfnt 目录的起始偏移（ttc 时非 0）。
@@ -259,10 +262,7 @@ pub fn parse_font_family(bytes: &[u8]) -> Option<String> {
         let name_id = be_u16(name_table, record.checked_add(6)?)?;
         let length = be_u16(name_table, record.checked_add(8)?)? as usize;
         let offset = be_u16(name_table, record.checked_add(10)?)? as usize + string_offset;
-        let Some(text_bytes) = name_table
-            .get(offset..)
-            .and_then(|rest| rest.get(..length))
-        else {
+        let Some(text_bytes) = name_table.get(offset..).and_then(|rest| rest.get(..length)) else {
             continue;
         };
         if name_id == 16 || name_id == 1 {
@@ -297,11 +297,7 @@ fn decode_ascii(bytes: &[u8]) -> Option<String> {
         .trim_matches('\u{0}')
         .trim()
         .to_string();
-    if text.is_empty() {
-        None
-    } else {
-        Some(text)
-    }
+    if text.is_empty() { None } else { Some(text) }
 }
 
 // ---------------------------------------------------------------------------

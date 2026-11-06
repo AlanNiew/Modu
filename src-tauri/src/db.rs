@@ -25,9 +25,8 @@ impl Db {
                 AppError::Internal(format!("创建数据目录失败 {}: {e}", dir.display()))
             })?;
         }
-        let mut conn = Connection::open(path).map_err(|e| {
-            AppError::Internal(format!("打开数据库失败 {}: {e}", path.display()))
-        })?;
+        let mut conn = Connection::open(path)
+            .map_err(|e| AppError::Internal(format!("打开数据库失败 {}: {e}", path.display())))?;
 
         // WAL：读写不互相阻塞；外键必须显式打开（SQLite 默认关闭）。
         conn.pragma_update(None, "journal_mode", "WAL")?;

@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 
-use crate::db::{now_ms, Db};
+use crate::db::{Db, now_ms};
 use crate::epub::{self, OpenedBook};
 use crate::error::{AppError, AppResult};
 
@@ -243,10 +243,9 @@ fn import_one(db: &Db, covers_dir: &Path, path: &str) -> AppResult<BookSummary> 
     if !file_path.is_file() {
         return Err(AppError::NotFound(path.to_string()));
     }
-    let file_path =
-        file_path
-            .canonicalize()
-            .map_err(|e| AppError::Internal(format!("路径规范化失败 {path}: {e}")))?;
+    let file_path = file_path
+        .canonicalize()
+        .map_err(|e| AppError::Internal(format!("路径规范化失败 {path}: {e}")))?;
     let path = file_path.to_string_lossy().to_string();
 
     let bytes = std::fs::read(&file_path)?;
@@ -484,7 +483,10 @@ fn is_block_tag(rest: &str) -> bool {
 /// 不做完整 HTML 解析——只为字数/进度展示服务，几百万字也只需毫秒级。
 #[cfg_attr(not(test), allow(dead_code))] // 仅测试用于校验 html_to_text 的字数口径
 pub fn plain_text_len(html: &str) -> usize {
-    html_to_text(html).chars().filter(|c| !c.is_whitespace()).count()
+    html_to_text(html)
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .count()
 }
 
 /// 抽出可见正文：与 [`plain_text_len`] 同一套扫描规则，但保留文本本身。
@@ -552,32 +554,33 @@ pub fn html_to_text(html: &str) -> String {
         }
 
         if bytes[i] == b'&'
-            && let Some(semi) = html[i..].find(';').filter(|n| *n <= 10) {
-                let entity = &html[i + 1..i + semi];
-                let ch = match entity {
-                    "amp" => Some('&'),
-                    "lt" => Some('<'),
-                    "gt" => Some('>'),
-                    "quot" => Some('"'),
-                    "apos" => Some('\''),
-                    "nbsp" => Some(' '),
-                    _ => entity
-                        .strip_prefix('#')
-                        .and_then(|num| {
-                            if let Some(hex) = num.strip_prefix('x').or_else(|| num.strip_prefix('X')) {
-                                u32::from_str_radix(hex, 16).ok()
-                            } else {
-                                num.parse::<u32>().ok()
-                            }
-                        })
-                        .and_then(char::from_u32),
-                };
-                if let Some(ch) = ch {
-                    push_text(ch, &mut out, &mut pending_space);
-                    i += semi + 1;
-                    continue;
-                }
+            && let Some(semi) = html[i..].find(';').filter(|n| *n <= 10)
+        {
+            let entity = &html[i + 1..i + semi];
+            let ch = match entity {
+                "amp" => Some('&'),
+                "lt" => Some('<'),
+                "gt" => Some('>'),
+                "quot" => Some('"'),
+                "apos" => Some('\''),
+                "nbsp" => Some(' '),
+                _ => entity
+                    .strip_prefix('#')
+                    .and_then(|num| {
+                        if let Some(hex) = num.strip_prefix('x').or_else(|| num.strip_prefix('X')) {
+                            u32::from_str_radix(hex, 16).ok()
+                        } else {
+                            num.parse::<u32>().ok()
+                        }
+                    })
+                    .and_then(char::from_u32),
+            };
+            if let Some(ch) = ch {
+                push_text(ch, &mut out, &mut pending_space);
+                i += semi + 1;
+                continue;
             }
+        }
 
         // 多字节 UTF-8：按字符推进。
         let ch = html[i..].chars().next().unwrap_or('\u{fffd}');
@@ -675,12 +678,18 @@ mod tests {
 
         let books = list(&db, &ListOptions::default()).unwrap();
         assert_eq!(books.len(), 1);
-        assert_eq!(list(&db, &ListOptions {
-            query: Some("纸上的灯".into()),
-            ..Default::default()
-        })
-        .unwrap()
-        .len(), 1);
+        assert_eq!(
+            list(
+                &db,
+                &ListOptions {
+                    query: Some("纸上的灯".into()),
+                    ..Default::default()
+                }
+            )
+            .unwrap()
+            .len(),
+            1
+        );
 
         // 全文索引在导入时写好，长词走 FTS5、短词走逐章扫描，两者都要能命中。
         assert_eq!(index_status(&db, first.id).unwrap(), 4);
@@ -708,7 +717,11 @@ mod tests {
         if !sample.is_file() {
             return;
         }
-        let outcome = import(&db, &dir.join("covers"), &[sample.to_string_lossy().to_string()]);
+        let outcome = import(
+            &db,
+            &dir.join("covers"),
+            &[sample.to_string_lossy().to_string()],
+        );
         let book_id = outcome[0].book.as_ref().expect("导入应成功").id;
 
         let input = AnnotationInput {
@@ -744,20 +757,30 @@ mod tests {
 
         assert_eq!(annotation_list(&db, book_id).unwrap().len(), 2);
 
-        let updated =
-            annotation_update(&db, added.id, Some("改过的备注"), Some(AnnotationColor::Blue)).unwrap();
+        let updated = annotation_update(
+            &db,
+            added.id,
+            Some("改过的备注"),
+            Some(AnnotationColor::Blue),
+        )
+        .unwrap();
         assert_eq!(updated.note.as_deref(), Some("改过的备注"));
         assert_eq!(updated.color, AnnotationColor::Blue);
 
         // 传空字符串 = 清空备注
-        assert!(annotation_update(&db, added.id, Some(""), None)
-            .unwrap()
-            .note
-            .is_none());
+        assert!(
+            annotation_update(&db, added.id, Some(""), None)
+                .unwrap()
+                .note
+                .is_none()
+        );
 
         annotation_remove(&db, added.id).unwrap();
         assert_eq!(annotation_list(&db, book_id).unwrap().len(), 1);
-        assert!(annotation_remove(&db, added.id).is_err(), "重复删除应报不存在");
+        assert!(
+            annotation_remove(&db, added.id).is_err(),
+            "重复删除应报不存在"
+        );
     }
 
     /// 导入 + 建 FTS 索引的耗时（打印用，不做硬断言）。
@@ -913,11 +936,15 @@ mod tests {
         let db = Db::open(&dir.join("modu.db")).unwrap();
         let epub = dir.join("traditional.epub");
         mini_epub_with_body(&epub, "繁簡測試", "紙上的燈光");
-        let book_id = import(&db, &dir.join("covers"), &[epub.to_string_lossy().to_string()])[0]
-            .book
-            .as_ref()
-            .expect("导入应成功")
-            .id;
+        let book_id = import(
+            &db,
+            &dir.join("covers"),
+            &[epub.to_string_lossy().to_string()],
+        )[0]
+        .book
+        .as_ref()
+        .expect("导入应成功")
+        .id;
 
         // 章节标题来自目录；这里没有 nav，手工改成繁体验证「命中标题同转换」。
         db.with_mut(|conn| {
@@ -932,7 +959,10 @@ mod tests {
         let hit = |query: &str, convert: bool| search(&db, book_id, query, 10, convert).unwrap();
 
         // 不转换：原文是繁体，「灯光」查不到，「燈光」查得到。
-        assert!(hit("灯光", false).is_empty(), "未开启转换时简体词不应命中繁体原文");
+        assert!(
+            hit("灯光", false).is_empty(),
+            "未开启转换时简体词不应命中繁体原文"
+        );
         assert_eq!(hit("燈光", false).len(), 1);
 
         // 转换模式：简体查询命中（正文转换后匹配），繁体查询也命中（查询词同样过 t2s）。
@@ -968,12 +998,20 @@ mod tests {
         let db = Db::open(&dir.join("modu.db")).unwrap();
         let epub = dir.join("wildcards.epub");
         mini_epub(&epub, "100%_真实", false);
-        import(&db, &dir.join("covers"), &[epub.to_string_lossy().to_string()]);
+        import(
+            &db,
+            &dir.join("covers"),
+            &[epub.to_string_lossy().to_string()],
+        );
 
         let hit = |query: &str| {
             list(
                 &db,
-                &ListOptions { sort: None, filter: None, query: Some(query.into()) },
+                &ListOptions {
+                    sort: None,
+                    filter: None,
+                    query: Some(query.into()),
+                },
             )
             .unwrap()
             .len()
@@ -991,11 +1029,15 @@ mod tests {
         let db = Db::open(&dir.join("modu.db")).unwrap();
         let epub = dir.join("markdown.epub");
         mini_epub(&epub, "导出测试书", false);
-        let book_id = import(&db, &dir.join("covers"), &[epub.to_string_lossy().to_string()])[0]
-            .book
-            .as_ref()
-            .expect("导入应成功")
-            .id;
+        let book_id = import(
+            &db,
+            &dir.join("covers"),
+            &[epub.to_string_lossy().to_string()],
+        )[0]
+        .book
+        .as_ref()
+        .expect("导入应成功")
+        .id;
 
         annotation_add(
             &db,
@@ -1021,7 +1063,6 @@ mod tests {
         assert!(md.contains("备注：这句好"));
         assert!(md.contains("pink划线"));
     }
-
 }
 
 // ---------------------------------------------------------------------------
@@ -1091,7 +1132,10 @@ pub fn progress_save(db: &Db, book_id: i64, locator: &str, percent: f64) -> AppR
                 rusqlite::params![book_id, now],
             )?;
         } else {
-            conn.execute("UPDATE books SET finished_at = NULL WHERE id = ?1", [book_id])?;
+            conn.execute(
+                "UPDATE books SET finished_at = NULL WHERE id = ?1",
+                [book_id],
+            )?;
         }
         Ok(())
     })
@@ -1661,7 +1705,8 @@ fn scan_search(
     needle: &str,
     limit: usize,
     convert: bool,
-) -> AppResult<Vec<SearchHit>> {    let match_chars = needle.chars().count();
+) -> AppResult<Vec<SearchHit>> {
+    let match_chars = needle.chars().count();
     let mut hits = Vec::new();
     if convert {
         for chapter in converted_chapters(db, book_id)?.iter() {
@@ -1727,7 +1772,14 @@ fn fts_search(db: &Db, book_id: i64, needle: &str, limit: usize) -> AppResult<Ve
 
 /// 以命中位置为中心截一段上下文，并用 U+0001/U+0002 标出命中。
 fn make_snippet(text: &str, offset: usize, match_chars: usize) -> String {
-    let before: String = text[..offset].chars().rev().take(24).collect::<Vec<_>>().into_iter().rev().collect();
+    let before: String = text[..offset]
+        .chars()
+        .rev()
+        .take(24)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
     let match_len = text[offset..]
         .char_indices()
         .nth(match_chars)

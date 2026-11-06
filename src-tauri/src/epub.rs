@@ -133,7 +133,12 @@ pub fn open(path: &str) -> AppResult<OpenedBook> {
     let container_doc = roxmltree::Document::parse(&container)?;
     let opf_path = container_doc
         .descendants()
-        .find(|n| n.has_tag_name(("urn:oasis:names:tc:opendocument:xmlns:container", "rootfile")))
+        .find(|n| {
+            n.has_tag_name((
+                "urn:oasis:names:tc:opendocument:xmlns:container",
+                "rootfile",
+            ))
+        })
         .and_then(|n| n.attribute("full-path"))
         .ok_or_else(|| AppError::InvalidEpub("container.xml 缺少 rootfile/@full-path".into()))?
         .to_string();
@@ -172,18 +177,26 @@ pub fn open(path: &str) -> AppResult<OpenedBook> {
                     language = child.text().unwrap_or_default().trim().to_string();
                 }
                 (Some(DC_NS), "publisher") => {
-                    publisher = child.text().map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
+                    publisher = child
+                        .text()
+                        .map(|t| t.trim().to_string())
+                        .filter(|t| !t.is_empty());
                 }
                 (Some(DC_NS), "description") => {
-                    description = child.text().map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
+                    description = child
+                        .text()
+                        .map(|t| t.trim().to_string())
+                        .filter(|t| !t.is_empty());
                 }
                 (Some(DC_NS), "identifier") if identifier.is_none() => {
-                    identifier = child.text().map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
+                    identifier = child
+                        .text()
+                        .map(|t| t.trim().to_string())
+                        .filter(|t| !t.is_empty());
                 }
-                (_, "meta")
-                    if child.attribute("name") == Some("cover") => {
-                        meta_cover_id = child.attribute("content").map(|s| s.to_string());
-                    }
+                (_, "meta") if child.attribute("name") == Some("cover") => {
+                    meta_cover_id = child.attribute("content").map(|s| s.to_string());
+                }
                 _ => {}
             }
         }
@@ -192,8 +205,14 @@ pub fn open(path: &str) -> AppResult<OpenedBook> {
     // ---- manifest ----
     let mut manifest: HashMap<String, ManifestItem> = HashMap::new();
     let mut resource_paths: Vec<String> = Vec::new();
-    if let Some(items) = doc.descendants().find(|n| n.has_tag_name((OPF_NS, "manifest"))) {
-        for item in items.children().filter(|n| n.has_tag_name((OPF_NS, "item"))) {
+    if let Some(items) = doc
+        .descendants()
+        .find(|n| n.has_tag_name((OPF_NS, "manifest")))
+    {
+        for item in items
+            .children()
+            .filter(|n| n.has_tag_name((OPF_NS, "item")))
+        {
             let (Some(id), Some(href)) = (item.attribute("id"), item.attribute("href")) else {
                 continue;
             };
@@ -205,7 +224,11 @@ pub fn open(path: &str) -> AppResult<OpenedBook> {
             }
             manifest.insert(
                 id.to_string(),
-                ManifestItem { path, media_type, properties },
+                ManifestItem {
+                    path,
+                    media_type,
+                    properties,
+                },
             );
         }
     }
@@ -214,15 +237,28 @@ pub fn open(path: &str) -> AppResult<OpenedBook> {
     let mut spine: Vec<SpineItem> = Vec::new();
     let mut direction = "ltr".to_string();
     let mut spine_toc_id: Option<String> = None;
-    if let Some(spine_el) = doc.descendants().find(|n| n.has_tag_name((OPF_NS, "spine"))) {
+    if let Some(spine_el) = doc
+        .descendants()
+        .find(|n| n.has_tag_name((OPF_NS, "spine")))
+    {
         if let Some(dir) = spine_el.attribute("page-progression-direction") {
             direction = dir.to_string();
         }
         spine_toc_id = spine_el.attribute("toc").map(|s| s.to_string());
-        for itemref in spine_el.children().filter(|n| n.has_tag_name((OPF_NS, "itemref"))) {
-            let Some(idref) = itemref.attribute("idref") else { continue };
-            let Some(item) = manifest.get(idref) else { continue };
-            let linear = itemref.attribute("linear").map(|v| v != "no").unwrap_or(true);
+        for itemref in spine_el
+            .children()
+            .filter(|n| n.has_tag_name((OPF_NS, "itemref")))
+        {
+            let Some(idref) = itemref.attribute("idref") else {
+                continue;
+            };
+            let Some(item) = manifest.get(idref) else {
+                continue;
+            };
+            let linear = itemref
+                .attribute("linear")
+                .map(|v| v != "no")
+                .unwrap_or(true);
             spine.push(SpineItem {
                 index: spine.len(),
                 idref: idref.to_string(),
@@ -265,9 +301,10 @@ pub fn open(path: &str) -> AppResult<OpenedBook> {
         .values()
         .find(|i| i.properties.split_whitespace().any(|p| p == "nav"))
         && let Ok(text) = read_zip_text(&mut archive, &nav_item.path)
-            && let Ok(nav_doc) = roxmltree::Document::parse(&text) {
-                toc = parse_nav(&nav_doc, &parent_dir(&nav_item.path));
-            }
+        && let Ok(nav_doc) = roxmltree::Document::parse(&text)
+    {
+        toc = parse_nav(&nav_doc, &parent_dir(&nav_item.path));
+    }
     if toc.is_empty() {
         let ncx_path = spine_toc_id
             .as_ref()
@@ -281,9 +318,10 @@ pub fn open(path: &str) -> AppResult<OpenedBook> {
             });
         if let Some(ncx_path) = ncx_path
             && let Ok(text) = read_zip_text(&mut archive, &ncx_path)
-                && let Ok(ncx_doc) = roxmltree::Document::parse(&text) {
-                    toc = parse_ncx(&ncx_doc, &parent_dir(&ncx_path));
-                }
+            && let Ok(ncx_doc) = roxmltree::Document::parse(&text)
+        {
+            toc = parse_ncx(&ncx_doc, &parent_dir(&ncx_path));
+        }
     }
 
     // F-03：元数据没有 dc:title 时回退到文件名主干（不是写死「未命名」，
@@ -314,7 +352,12 @@ pub fn open(path: &str) -> AppResult<OpenedBook> {
     };
 
     let id = book_id(path, &package);
-    Ok(OpenedBook { id, path: path.to_string(), package: Arc::new(package), archive: Mutex::new(archive) })
+    Ok(OpenedBook {
+        id,
+        path: path.to_string(),
+        package: Arc::new(package),
+        archive: Mutex::new(archive),
+    })
 }
 
 fn book_id(path: &str, package: &Package) -> String {
@@ -323,9 +366,10 @@ fn book_id(path: &str, package: &Package) -> String {
     if let Ok(meta) = std::fs::metadata(path) {
         hasher.update(&meta.len().to_le_bytes());
         if let Ok(modified) = meta.modified()
-            && let Ok(dur) = modified.duration_since(std::time::UNIX_EPOCH) {
-                hasher.update(&dur.as_millis().to_le_bytes());
-            }
+            && let Ok(dur) = modified.duration_since(std::time::UNIX_EPOCH)
+        {
+            hasher.update(&dur.as_millis().to_le_bytes());
+        }
     }
     hasher.update(package.opf_path.as_bytes());
     hasher.finalize().to_hex()[..16].to_string()
@@ -416,10 +460,11 @@ pub fn decode_text(bytes: &[u8]) -> String {
 
     if let Some(label) = sniff_encoding(bytes)
         && let Some(enc) = encoding_rs::Encoding::for_label(label.as_bytes())
-            && enc != encoding_rs::UTF_8 {
-                let (text, _, _) = enc.decode(bytes);
-                return text.into_owned();
-            }
+        && enc != encoding_rs::UTF_8
+    {
+        let (text, _, _) = enc.decode(bytes);
+        return text.into_owned();
+    }
     // 没声明编码时：合法 UTF-8 直接用；否则按 GB18030 兜底（GBK 超集，
     // 覆盖大量不做声明的中文老书）。Big5 等其它中文编码通常会带 charset 声明，
     // 由上面的 sniff_encoding 分支处理。
@@ -480,11 +525,15 @@ pub fn resolve_href(base_dir: &str, href: &str) -> String {
 }
 
 pub fn href_fragment(href: &str) -> Option<String> {
-    href.find('#').map(|i| href[i + 1..].to_string()).filter(|s| !s.is_empty())
+    href.find('#')
+        .map(|i| href[i + 1..].to_string())
+        .filter(|s| !s.is_empty())
 }
 
 pub fn percent_decode(input: &str) -> String {
-    percent_encoding::percent_decode_str(input).decode_utf8_lossy().into_owned()
+    percent_encoding::percent_decode_str(input)
+        .decode_utf8_lossy()
+        .into_owned()
 }
 
 pub fn normalize_path(path: &str) -> String {
@@ -519,7 +568,10 @@ fn parse_nav(doc: &roxmltree::Document, base_dir: &str) -> Vec<TocItem> {
                 .map(|t| t.split_whitespace().any(|x| x == "toc"))
                 .unwrap_or(false)
         })
-        .or_else(|| doc.descendants().find(|n| n.has_tag_name((XHTML_NS, "nav"))))
+        .or_else(|| {
+            doc.descendants()
+                .find(|n| n.has_tag_name((XHTML_NS, "nav")))
+        })
     else {
         return Vec::new();
     };
@@ -540,24 +592,26 @@ fn collect_nav_list(list: roxmltree::Node, base_dir: &str, depth: u32, out: &mut
             .map(|n| n.text().unwrap_or_default().trim().to_string())
             .unwrap_or_default();
         if let Some(a) = link
-            && let Some(href) = a.attribute("href") {
-                let path = resolve_href(base_dir, href);
-                out.push(TocItem {
-                    label,
-                    href: href.to_string(),
-                    path: Some(path).filter(|p| !p.is_empty()),
-                    fragment: href_fragment(href),
-                    depth,
-                });
-            }
+            && let Some(href) = a.attribute("href")
+        {
+            let path = resolve_href(base_dir, href);
+            out.push(TocItem {
+                label,
+                href: href.to_string(),
+                path: Some(path).filter(|p| !p.is_empty()),
+                fragment: href_fragment(href),
+                depth,
+            });
+        }
         if let Some(sub) = li.children().find(|n| n.has_tag_name((XHTML_NS, "ol"))) {
             collect_nav_list(sub, base_dir, depth + 1, out);
         }
         // 个别书把嵌套 ol 放进了 a 里面
         if let Some(a) = link
-            && let Some(sub) = a.children().find(|n| n.has_tag_name((XHTML_NS, "ol"))) {
-                collect_nav_list(sub, base_dir, depth + 1, out);
-            }
+            && let Some(sub) = a.children().find(|n| n.has_tag_name((XHTML_NS, "ol")))
+        {
+            collect_nav_list(sub, base_dir, depth + 1, out);
+        }
     }
 }
 
@@ -626,8 +680,14 @@ mod tests {
 
     #[test]
     fn normalizes_href_paths() {
-        assert_eq!(resolve_href("OEBPS", "Text/ch1.xhtml"), "OEBPS/Text/ch1.xhtml");
-        assert_eq!(resolve_href("OEBPS/Text", "../Images/a.png"), "OEBPS/Images/a.png");
+        assert_eq!(
+            resolve_href("OEBPS", "Text/ch1.xhtml"),
+            "OEBPS/Text/ch1.xhtml"
+        );
+        assert_eq!(
+            resolve_href("OEBPS/Text", "../Images/a.png"),
+            "OEBPS/Images/a.png"
+        );
         assert_eq!(resolve_href("OEBPS", "./ch1.xhtml#fn1"), "OEBPS/ch1.xhtml");
         assert_eq!(href_fragment("./ch1.xhtml#fn1").as_deref(), Some("fn1"));
     }
@@ -679,8 +739,10 @@ mod tests {
         )
         .unwrap();
         zip.start_file("OEBPS/Text/c1.xhtml", deflated).unwrap();
-        zip.write_all(br#"<html xmlns="http://www.w3.org/1999/xhtml"><body><p>x</p></body></html>"#)
-            .unwrap();
+        zip.write_all(
+            br#"<html xmlns="http://www.w3.org/1999/xhtml"><body><p>x</p></body></html>"#,
+        )
+        .unwrap();
         zip.start_file("META-INF/encryption.xml", deflated).unwrap();
         zip.write_all(
             br#"<?xml version="1.0"?><encryption
@@ -732,14 +794,17 @@ mod tests {
             assert!(result.is_err(), "{name}（{note}）应当打开失败");
             checked += 1;
         }
-        assert!(checked > 0, "一个畸形样本都没找到：先跑 scripts/gen_fixtures.py");
+        assert!(
+            checked > 0,
+            "一个畸形样本都没找到：先跑 scripts/gen_fixtures.py"
+        );
     }
 
     /// 性能基准（仅仅是把耗时打出来，不做硬断言，避免 CI 机器差异导致红灯）。
     #[test]
     fn benches_large_book() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../.books/bench-large.epub");
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.books/bench-large.epub");
         if !path.exists() {
             eprintln!("跳过基准：先跑 scripts/gen_fixtures.py");
             return;
