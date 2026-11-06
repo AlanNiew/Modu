@@ -7,11 +7,10 @@ import { cn } from '../../lib/cn'
 import {
   FONT_STACKS,
   THEME_OPTIONS,
-  getReadingTheme,
   type ReadingFlow,
-  type ReadingSettings,
-  type ThemeId,
+  themeSwatch,
 } from '../../renderer/theme'
+import { useReaderSettings } from '../../store/settings'
 
 const ALIGN_OPTIONS: Array<{ id: 'justify' | 'left'; label: string }> = [
   { id: 'justify', label: '两端对齐' },
@@ -29,20 +28,7 @@ const FONT_OPTIONS: Array<{ kind: 'serif' | 'sans' | 'kai'; label: string }> = [
   { kind: 'kai', label: '楷体' },
 ]
 
-/** 主题色块：具体主题用「纸色 + 强调色」斜切，auto 用深浅对半。 */
-function themeSwatch(theme: ThemeId): string {
-  if (theme === 'auto') {
-    return 'conic-gradient(from 210deg, #1e1e2e 0 50%, #eff1f5 50% 100%)'
-  }
-  const palette = getReadingTheme(theme)
-  return `linear-gradient(135deg, ${palette.background} 0 58%, ${palette.accent} 58% 100%)`
-}
-
 interface ReadingSettingsPanelProps {
-  settings: ReadingSettings
-  onPatch: (partial: Partial<ReadingSettings>) => void
-  onFontKind: (kind: 'serif' | 'sans' | 'kai') => void
-  onReset: () => void
   children: React.ReactNode
 }
 
@@ -90,19 +76,17 @@ function SliderRow({
 }
 
 /**
- * 阅读排版面板。
+ * 阅读排版快速面板（阅读页标题栏保留的常用子集，P1 起由 App 渲染）。
  *
- * 选项刻意克制：主题、字体、字号、行高、版心、首行缩进——这六项覆盖了
- * 中文阅读的绝大多数诉求；两端对齐和页边距这种「调了只会更难看」的参数
- * 直接固定，不再暴露给用户。
+ * 这里是阅读中的高频调整入口；数据直接读 `useReaderSettings`，
+ * 与设置页共享同一份持久化状态。完整设置页（后续阶段的排版/转换/
+ * 行为分组）提供全量自定义。
  */
-export function ReadingSettingsPanel({
-  settings,
-  onPatch,
-  onFontKind,
-  onReset,
-  children,
-}: ReadingSettingsPanelProps) {
+export function ReadingSettingsPanel({ children }: ReadingSettingsPanelProps) {
+  const settings = useReaderSettings((state) => state.settings)
+  const onPatch = useReaderSettings((state) => state.patch)
+  const onFontKind = useReaderSettings((state) => state.setFontFamilyKind)
+  const onReset = useReaderSettings((state) => state.reset)
   const activeFont =
     settings.fontFamily === FONT_STACKS.sans
       ? 'sans'
@@ -199,8 +183,8 @@ export function ReadingSettingsPanel({
               label="字号"
               value={settings.fontSize}
               suffix=" px"
-              min={13}
-              max={34}
+              min={14}
+              max={32}
               step={1}
               onChange={(fontSize) => onPatch({ fontSize })}
             />

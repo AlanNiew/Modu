@@ -125,3 +125,6 @@ export const exportAnnotationsMarkdown = (libraryId: number) =>
 /** 写文本文件；路径来自用户显式选择的保存对话框。 */
 export const writeTextFile = (path: string, contents: string) =>
   invoke<void>('write_text_file', { path, contents })
+
+/** 在资源管理器中显示出数据目录（书库、封面、批注数据所在处），返回实际路径。 */
+export const revealDataDir = () => invoke<string>('reveal_data_dir')

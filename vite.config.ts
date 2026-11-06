@@ -1,12 +1,24 @@
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 
 const host = process.env.TAURI_DEV_HOST
 
+// 顶层 package.json 的版本，构建时注入为 __APP_VERSION__，
+// 「设置 → 关于」直接展示，避免 package.json / tauri.conf.json 双处维护漂移。
+const pkg = JSON.parse(
+  readFileSync(fileURLToPath(new URL('./package.json', import.meta.url)), 'utf-8'),
+) as { version: string }
+
 // Tauri 要求固定端口；构建目标按运行平台选择（Windows=WebView2/Chromium）。
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  define: {
+    __APP_VERSION__: JSON.stringify(pkg.version),
+  },
   clearScreen: false,
   server: {
     port: 1420,

@@ -76,7 +76,7 @@ fn init_state(app: &tauri::AppHandle) -> Result<state::AppState, Box<dyn std::er
     std::fs::create_dir_all(&covers_dir)?;
     let db = db::Db::open(&db_path)?;
     log::info!("数据目录: {}", base.display());
-    Ok(state::AppState::new(db, covers_dir))
+    Ok(state::AppState::new(db, base, covers_dir))
 }
 
 fn log_plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
@@ -157,6 +157,7 @@ pub fn run() {
             commands::annotation_remove,
             commands::annotation_export_markdown,
             commands::write_text_file,
+            commands::reveal_data_dir,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

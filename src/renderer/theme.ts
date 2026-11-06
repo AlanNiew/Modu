@@ -15,6 +15,15 @@ export type ConcreteThemeId = 'dark' | 'light' | 'sepia' | 'green'
 /** 用户可选主题：auto 跟随系统深浅色 */
 export type ThemeId = 'auto' | ConcreteThemeId
 
+/** 主题色块：具体主题用「纸色 + 强调色」斜切，auto 用深浅对半。 */
+export function themeSwatch(theme: ThemeId): string {
+  if (theme === 'auto') {
+    return 'conic-gradient(from 210deg, #1e1e2e 0 50%, #eff1f5 50% 100%)'
+  }
+  const palette = getReadingTheme(theme)
+  return `linear-gradient(135deg, ${palette.background} 0 58%, ${palette.accent} 58% 100%)`
+}
+
 /** 排版流向：分页（左右翻）或滚动（上下滑） */
 export type ReadingFlow = 'paginated' | 'scrolled'
 

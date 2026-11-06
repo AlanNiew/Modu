@@ -1,8 +1,7 @@
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { FolderOpen, Keyboard, Library, RefreshCw, Search, X } from 'lucide-react'
+import { FolderOpen, Library, Search, X } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
-import { TitleBar, TitleBarButton } from '../../components/TitleBar'
 import { cn } from '../../lib/cn'
 import type { BookSummary, ShelfFilter, ShelfSort } from '../../lib/types'
 import { FILTER_LABELS, SORT_LABELS, useLibrary } from '../../store/library'
@@ -10,10 +9,6 @@ import { BookCard } from './BookCard'
 
 interface ShelfPageProps {
   onOpenBook: (book: BookSummary) => void
-  /** 打开快捷键帮助面板（由 App 统一持有 Dialog）。 */
-  onOpenHelp: () => void
-  /** 检查软件更新（由 App 统一持有更新面板）。 */
-  onCheckUpdate: () => void
 }
 
 /** 卡片最小宽度与间距：列数由容器宽度反算，不写死每行几本。 */
@@ -62,7 +57,7 @@ function useGridMetrics(ref: React.RefObject<HTMLDivElement | null>): GridMetric
   }, [width])
 }
 
-export function ShelfPage({ onOpenBook, onOpenHelp, onCheckUpdate }: ShelfPageProps) {
+export function ShelfPage({ onOpenBook }: ShelfPageProps) {
   const books = useLibrary((state) => state.books)
   const loading = useLibrary((state) => state.loading)
   const importing = useLibrary((state) => state.importing)
@@ -120,35 +115,7 @@ export function ShelfPage({ onOpenBook, onOpenHelp, onCheckUpdate }: ShelfPagePr
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-base">
-      {/* 标题栏：与阅读页同一套（品牌 → 标题；右侧操作组 → 窗口按钮） */}
-      <TitleBar
-        title="墨读"
-        subtitle="图书馆"
-        actions={
-          <>
-            <TitleBarButton
-              title="搜索书架"
-              onClick={() => searchRef.current?.focus()}
-            >
-              <Search size={15} />
-            </TitleBarButton>
-            <TitleBarButton
-              title="导入 EPUB"
-              onClick={() => void importFromDialog()}
-            >
-              <FolderOpen size={15} />
-            </TitleBarButton>
-            <TitleBarButton title="检查更新" onClick={onCheckUpdate}>
-              <RefreshCw size={15} />
-            </TitleBarButton>
-            <TitleBarButton title="快捷键与帮助（F1）" onClick={onOpenHelp}>
-              <Keyboard size={15} />
-            </TitleBarButton>
-          </>
-        }
-      />
-
-      {/* 工具栏：搜索 + 筛选 + 排序 */}
+      {/* 标题栏由 App 统一渲染；页面只需要工具栏（搜索 + 筛选 + 排序）。 */}
       <header className="flex shrink-0 items-center gap-3 border-b border-surface0/50 px-6 py-2.5">
         <div className="relative w-64">
           <Search

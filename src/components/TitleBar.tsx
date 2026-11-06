@@ -10,40 +10,45 @@ import {
 
 import logoUrl from '../assets/logo.svg'
 import { cn } from '../lib/cn'
+import { MenuBar, type MenuSectionSpec } from './MenuBar'
 
 interface TitleBarProps {
   title: string
   subtitle?: string
-  /** 传了才显示返回按钮（阅读页 → 书架） */
-  onBack?: () => void
-  backLabel?: string
-  /** 右侧菜单按钮（书签/目录/排版/导入…），窗口控制按钮永远在最右 */
+  /** 全局固定菜单栏（文件/阅读/视图/帮助），与具体页面无关。 */
+  menuSections: MenuSectionSpec[]
+  /** 页面级快捷按钮：只有少量高频动作（侧栏开关/排版快速面板）。 */
   actions?: ReactNode
-  /** 沉浸模式：整条标题栏不渲染（由调用方决定是否挂载） */
+  /** 传了才显示返回按钮（阅读页 → 书架 / 设置页 → 上一视图）。 */
+  backLabel?: string
+  onBack?: () => void
   className?: string
 }
 
 /**
- * 自绘标题栏。
+ * 自绘标题栏（全局唯一实例，由 App 渲染）。
  *
- * Windows 原生标题栏没法跟主题一体（永远是系统色），所以窗口在
- * tauri.conf.json 里设了 `decorations: false`，标题栏完全由我们画：
- * - `data-tauri-drag-region` 标出可拖动区域（Tauri 内置脚本处理拖动 + 双击最大化）
- * - 窗口按钮放在拖拽区之外，否则点不到
- * - 拖动逻辑不依赖 JS，窗口缩放由 App 里的 WindowResizeHandles 负责
+ * Windows 原生标题栏没法跟主题一体（永远是系统色），窗口在
+ * tauri.conf.json 里设 `decorations: false`，标题栏完全自绘：
+ * - `data-tauri-drag-region` 标出可拖动区域（Tauri 内置脚本处理拖动 + 双击最大化），
+ *   注意 只有带该属性的元素才会触发拖动，菜单/按钮不受影响
+ * - 窗口按钮放在拖拽区之外，点得到
+ * - 窗口缩放由 WindowResizeHandles 负责
  *
- * 版式在所有页面保持一致（书架 / 阅读器只是内容不同）：
- * 左：品牌图标 → 可选返回 → 标题 + 副标题
- * 右：操作组（统一 28×28 图标按钮，按「主操作 → 视图 → 布局 → 沉浸」排序）
- *     → 分隔线 → 窗口按钮
- * 页面只决定操作组里有哪几个按钮，不改变它们的大小、间距与排列逻辑。
+ * 布局（书架 / 阅读器 / 设置保持一致）：
+ *   品牌图标 → 可选返回 → 标题+副标题 →（弹性）→ 固定菜单栏 → 页面快捷按钮
+ *   → 分隔线 → 窗口按键
+ *
+ * 「菜单栏固定」的含义：书架与阅读页之间切换时，菜单栏不变；
+ * 沉浸/全屏是显式隐藏整个界面（含标题栏）的模式，不在该保证范围内。
  */
 export function TitleBar({
   title,
   subtitle,
-  onBack,
-  backLabel = '书架',
+  menuSections,
   actions,
+  backLabel = '返回',
+  onBack,
   className,
 }: TitleBarProps) {
   return (
@@ -71,7 +76,7 @@ export function TitleBar({
         <button
           type="button"
           onClick={onBack}
-          title={`返回${backLabel}（Esc）`}
+          title={`返回${backLabel}`}
           className="ml-1 flex h-7 shrink-0 items-center gap-0.5 rounded-md px-1.5 text-[11px] text-subtext transition hover:bg-surface0/80 hover:text-text"
         >
           <ChevronLeft size={15} />
@@ -93,7 +98,9 @@ export function TitleBar({
         )}
       </div>
 
-      <div className="flex shrink-0 items-center gap-0.5">{actions}</div>
+      <MenuBar sections={menuSections} />
+
+      {actions && <div className="ml-1 flex shrink-0 items-center gap-0.5">{actions}</div>}
 
       <div className="mx-1 h-5 w-px shrink-0 bg-surface0/70" />
       <WindowControls />
@@ -122,6 +129,7 @@ export const TitleBarButton = forwardRef<
       type="button"
       title={title}
       aria-label={title}
+      aria-pressed={active}
       {...rest}
       className={cn(
         'flex h-7 w-7 items-center justify-center rounded-md transition',

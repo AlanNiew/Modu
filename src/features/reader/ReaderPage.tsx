@@ -1,23 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  BookmarkPlus,
   BookOpen,
   Highlighter,
-  Keyboard,
   ListTree,
-  Maximize,
-  Maximize2,
-  Minimize2,
-  PanelLeft,
-  Settings2,
+  Focus,
   Search,
   Bookmark as BookmarkIcon,
 } from 'lucide-react'
 import { save } from '@tauri-apps/plugin-dialog'
 import { openUrl } from '@tauri-apps/plugin-opener'
 
-import { TitleBar, TitleBarButton } from '../../components/TitleBar'
 import { cn } from '../../lib/cn'
+import { CMD, registerCommand, unregisterAll } from '../../lib/commands'
+import { isOverlayOpen } from '../../lib/overlay'
 import {
   addAnnotation,
   addBookmark,
@@ -46,11 +41,11 @@ import type {
   TocItem,
 } from '../../lib/types'
 import { useLibrary } from '../../store/library'
+import { useChromeStore } from '../../store/chrome'
 import { useReaderSettings } from '../../store/settings'
 import { ReaderView, type ReaderApi, type RelocateState } from '../../renderer/ReaderView'
 import { AnnotationsPanel } from './AnnotationsPanel'
 import { BookmarksPanel } from './BookmarksPanel'
-import { ReadingSettingsPanel } from './ReadingSettingsPanel'
 import { TocTree } from './TocTree'
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
@@ -136,10 +131,13 @@ async function runBookmarkSmoke(
 interface ReaderPageProps {
   book: OpenedBookInfo
   onBack: () => void
-  /** 打开快捷键帮助面板（App 统一持有 Dialog）。 */
-  onOpenHelp: () => void
   fullscreen: boolean
   onToggleFullscreen: () => void
+  /**
+   * 阅读页暂时进入后台（打开设置页等）时为 true：暂停本页的所有键盘
+   * 快捷键，避免在设置页按 Esc/快捷键时把阅读页的状态一起切了。
+   */
+  suspended?: boolean
   /** dev spike 打开时自动跑一遍交互自检（生产构建不生效）。 */
   devSpike?: boolean
 }
@@ -148,6 +146,11 @@ type SidebarTab = 'toc' | 'bookmarks' | 'annotations' | 'search'
 
 /**
  * 阅读器页面。
+ *
+ * P1 重构后本页不再渲染标题栏：标题栏由 App 统一渲染，本页只向
+ * chrome store 写「书名 / 当前章节 / 沉浸态」，并把自己的动作
+ * （加书签、目录、搜索、侧栏、沉浸、返回、批注导出）注册进命令总线，
+ * 供全局菜单触发。
  *
  * M2 的几条主线都在这里汇合：
  * - 进度：打开时读 `progress` 表并 `goToChapter(index, fraction)` 恢复；
@@ -160,12 +163,13 @@ type SidebarTab = 'toc' | 'bookmarks' | 'annotations' | 'search'
 export function ReaderPage({
   book,
   onBack,
-  onOpenHelp,
   fullscreen,
   onToggleFullscreen,
+  suspended = false,
   devSpike = false,
 }: ReaderPageProps) {
-  const { settings, patch, setFontFamilyKind, reset } = useReaderSettings()
+  // 只取 settings：排版调整入口已迁到 App 的标题栏快速面板。
+  const { settings } = useReaderSettings()
 
   const [error, setError] = useState<string | null>(null)
   const [relocate, setRelocate] = useState<RelocateState>({
@@ -345,6 +349,9 @@ export function ReaderPage({
   // StrictMode 会重复调用 updater，副作用会被执行两次（会多退一次到书架）。
   const immersiveRef = useRef(false)
   immersiveRef.current = immersive
+  // 设置页在后台时（suspended）整页快捷键全部暂停，键盘事件属于上层视图。
+  const suspendedRef = useRef(suspended)
+  suspendedRef.current = suspended
   // Esc 阶梯要读全屏状态，但不能因为 fullscreen 变化而重绑监听
   const fullscreenRef = useRef(fullscreen)
   fullscreenRef.current = fullscreen
@@ -353,9 +360,10 @@ export function ReaderPage({
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return
+      if (suspendedRef.current) return
       // 帮助面板等 Radix 弹层自己也吃 Esc：弹层打开时交给它关，
       // 否则一次 Esc 会「关面板 + 退回书架」两件事一起做。
-      if (document.querySelector('[role="dialog"]')) return
+      if (isOverlayOpen()) return
       // Esc 阶梯：全屏 → 沉浸 → 书架（任务书 F-15）
       if (fullscreenRef.current) {
         onToggleFullscreenRef.current()
@@ -492,6 +500,7 @@ export function ReaderPage({
   // 阅读器快捷键：Ctrl+B 侧栏、Ctrl+K 搜索、Ctrl+D 书签（F1/F11 由 App 处理）
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      if (suspendedRef.current) return
       if (!event.ctrlKey && !event.metaKey) return
       // 弹层（帮助/设置）打开时不响应页面快捷键
       if (document.querySelector('[role="dialog"]')) return
@@ -622,51 +631,56 @@ export function ReaderPage({
     }
   }, [book.package.title, libraryId, showToast])
 
+  // -------------------------------------------------------------------------
+  // chrome 同步与全局命令注册（标题栏/菜单由 App 渲染，能力在这里）
+  // -------------------------------------------------------------------------
+
+  // 书名进标题（打开即写一次；换书不会复用本页实例）。
+  useEffect(() => {
+    useChromeStore.getState().set({ title: book.package.title })
+  }, [book.package.title])
+
+  // 当前章节进标题副文本。
+  useEffect(() => {
+    useChromeStore.getState().set({ subtitle: currentChapterLabel })
+  }, [currentChapterLabel])
+
+  // 沉浸态交给 App 决定是否隐藏标题栏。
+  useEffect(() => {
+    useChromeStore.getState().set({ immersive })
+  }, [immersive])
+
+  // 卸载时恢复默认沉浸态（防止下次打开书时标题栏被隐藏）。标题/章节
+  // 交给下一次挂载的页面覆盖，这里不做复位以避免 StrictMode 双挂载闪烁。
+  useEffect(() => {
+    return () => {
+      useChromeStore.getState().set({ immersive: false })
+    }
+  }, [])
+
+  // 注册本页能力到命令总线：每次渲染重新注册（捕获最新闭包），开销可忽略。
+  // 清理时先注销本页的口径，避免旧闭包残留。
+  useEffect(() => {
+    return unregisterAll(
+      registerCommand(CMD.readerAddBookmark, () => void handleAddBookmark()),
+      registerCommand(CMD.readerToc, () => {
+        setSidebarTab('toc')
+        setSidebarOpen(true)
+      }),
+      registerCommand(CMD.readerBookmarks, () => {
+        setSidebarTab('bookmarks')
+        setSidebarOpen(true)
+      }),
+      registerCommand(CMD.readerSearch, () => focusSearch()),
+      registerCommand(CMD.readerSidebar, () => setSidebarOpen((value) => !value)),
+      registerCommand(CMD.readerImmersive, () => toggleImmersive()),
+      registerCommand(CMD.readerExportAnnotations, () => void handleExportAnnotations()),
+      registerCommand(CMD.readerBack, () => void handleBack()),
+    )
+  })
+
   return (
     <div className="flex h-full min-h-0 flex-col bg-base text-text">
-      {!immersive && (
-        <TitleBar
-          title={book.package.title}
-          subtitle={currentChapterLabel}
-          onBack={() => void handleBack()}
-          actions={
-            <>
-              <TitleBarButton title="添加书签" onClick={() => void handleAddBookmark()}>
-                <BookmarkPlus size={15} />
-              </TitleBarButton>
-              <ReadingSettingsPanel
-                settings={settings}
-                onPatch={patch}
-                onFontKind={setFontFamilyKind}
-                onReset={reset}
-              >
-                <TitleBarButton title="阅读排版设置">
-                  <Settings2 size={15} />
-                </TitleBarButton>
-              </ReadingSettingsPanel>
-              <TitleBarButton
-                title={sidebarOpen ? '收起侧栏' : '展开侧栏'}
-                active={sidebarOpen}
-                onClick={() => setSidebarOpen((value) => !value)}
-              >
-                <PanelLeft size={15} />
-              </TitleBarButton>
-              <TitleBarButton title="沉浸模式" onClick={toggleImmersive}>
-                <Maximize2 size={15} />
-              </TitleBarButton>
-              <TitleBarButton
-                title={fullscreen ? '退出全屏（F11）' : '全屏（F11）'}
-                onClick={onToggleFullscreen}
-              >
-                {fullscreen ? <Minimize2 size={15} /> : <Maximize size={15} />}
-              </TitleBarButton>
-              <TitleBarButton title="快捷键与帮助（F1）" onClick={onOpenHelp}>
-                <Keyboard size={15} />
-              </TitleBarButton>
-            </>
-          }
-        />
-      )}
 
       {immersive && (
         <div className="pointer-events-none fixed inset-x-0 bottom-0 z-40">
@@ -689,9 +703,9 @@ export function ReaderPage({
             type="button"
             onClick={toggleImmersive}
             className="pointer-events-auto flex h-8 w-8 items-center justify-center rounded-md bg-mantle/70 text-overlay0 opacity-30 backdrop-blur transition hover:opacity-100 hover:text-text"
-            title="退出沉浸模式（Esc）"
+            title="退出专注阅读（Esc）"
           >
-            <Minimize2 size={15} />
+            <Focus size={15} />
           </button>
         </div>
       )}

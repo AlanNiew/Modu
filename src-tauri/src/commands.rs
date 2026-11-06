@@ -287,3 +287,18 @@ pub fn annotation_remove(
 ) -> AppResult<()> {
     library::annotation_remove(&state.db, annotation_id)
 }
+
+/// 在资源管理器中显示出数据目录（书库、封面、批注数据所在处）。
+///
+/// 「打开」语义放在 Rust：路径由 `AppState::data_dir`（lib.rs 的 data_dir）
+/// 决定，前端不持有也不传路径，避免任意路径被展示出窗口。
+#[tauri::command]
+pub fn reveal_data_dir(app: tauri::AppHandle, state: State<'_, AppState>) -> AppResult<String> {
+    use tauri_plugin_opener::OpenerExt;
+
+    let dir = state.data_dir.clone();
+    app.opener()
+        .reveal_item_in_dir(&dir)
+        .map_err(|e| AppError::Internal(format!("打开数据目录失败: {e}")))?;
+    Ok(dir.to_string_lossy().into_owned())
+}
