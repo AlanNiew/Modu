@@ -36,8 +36,12 @@ interface TitleBarProps {
  * - 窗口缩放由 WindowResizeHandles 负责
  *
  * 布局（书架 / 阅读器 / 设置保持一致）：
- *   品牌图标 → 可选返回 → 标题+副标题 →（弹性）→ 固定菜单栏 → 页面快捷按钮
+ *   品牌图标 → 固定菜单栏 → 可选返回 → 标题+副标题 →（弹性）→ 页面快捷按钮
  *   → 分隔线 → 窗口按键
+ *
+ * 菜单放在最左侧（Logo 右边、返回按钮之前）是 Windows 桌面应用的习惯位置：
+ * 菜单位置固定、不随标题长短浮动；标题占据其后的弹性区，长书名只会挤压
+ * 副标题而不会推动菜单。
  *
  * 「菜单栏固定」的含义：书架与阅读页之间切换时，菜单栏不变；
  * 沉浸/全屏是显式隐藏整个界面（含标题栏）的模式，不在该保证范围内。
@@ -72,6 +76,8 @@ export function TitleBar({
         />
       </div>
 
+      <MenuBar sections={menuSections} />
+
       {onBack && (
         <button
           type="button"
@@ -97,8 +103,6 @@ export function TitleBar({
           </span>
         )}
       </div>
-
-      <MenuBar sections={menuSections} />
 
       {actions && <div className="ml-1 flex shrink-0 items-center gap-0.5">{actions}</div>}
 
