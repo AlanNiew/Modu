@@ -372,12 +372,15 @@ pub fn close_policy_get(state: State<'_, AppState>) -> AppResult<prefs::CloseAct
 /// 写入「关闭主窗口」行为并返回落盘后的值。
 #[tauri::command]
 pub fn close_policy_set(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     action: prefs::CloseAction,
 ) -> AppResult<prefs::CloseAction> {
     let mut preferences = prefs::load(&state.data_dir);
     preferences.close_action = action;
     prefs::save(&state.data_dir, &preferences)?;
+    // 托盘菜单里的单选标记同步（两处都能改，不能各显示各的）。
+    tray::sync_close_action(&app, action);
     Ok(action)
 }
 
@@ -402,19 +405,39 @@ pub fn quit_app(app: tauri::AppHandle) {
     app.exit(0);
 }
 
-/// 开机自启当前是否开启。
+/// 开机自启状态：`supported` 区分「便携版不支持」与「只是没开」。
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutostartStatus {
+    pub supported: bool,
+    pub enabled: bool,
+}
+
+/// 开机自启当前状态（便携版 supported=false，前端据此置灰并提示）。
 #[tauri::command]
-pub fn autostart_get(app: tauri::AppHandle) -> AppResult<bool> {
+pub fn autostart_get(app: tauri::AppHandle) -> AppResult<AutostartStatus> {
     use tauri_plugin_autostart::ManagerExt;
-    app.autolaunch()
+
+    if tray::is_portable() {
+        return Ok(AutostartStatus { supported: false, enabled: false });
+    }
+    let enabled = app
+        .autolaunch()
         .is_enabled()
-        .map_err(|e| AppError::Internal(format!("读取开机自启状态失败: {e}")))
+        .map_err(|e| AppError::Internal(format!("读取开机自启状态失败: {e}")))?;
+    Ok(AutostartStatus { supported: true, enabled })
 }
 
 /// 开关开机自启，返回实际生效后的状态（写入失败会回滚为原值）。
 #[tauri::command]
-pub fn autostart_set(app: tauri::AppHandle, enabled: bool) -> AppResult<bool> {
+pub fn autostart_set(app: tauri::AppHandle, enabled: bool) -> AppResult<AutostartStatus> {
     use tauri_plugin_autostart::ManagerExt;
+
+    if tray::is_portable() {
+        return Err(AppError::Validation(
+            "便携版不支持开机自启，请使用安装版".into(),
+        ));
+    }
     let manager = app.autolaunch();
     if enabled {
         manager
@@ -425,7 +448,10 @@ pub fn autostart_set(app: tauri::AppHandle, enabled: bool) -> AppResult<bool> {
             .disable()
             .map_err(|e| AppError::Internal(format!("关闭开机自启失败: {e}")))?;
     }
-    manager
+    let actual = manager
         .is_enabled()
-        .map_err(|e| AppError::Internal(format!("读取开机自启状态失败: {e}")))
+        .map_err(|e| AppError::Internal(format!("读取开机自启状态失败: {e}")))?;
+    // 托盘菜单里的勾选同步（设置页改完，托盘不能还是旧状态）。
+    tray::sync_autostart_checked(&app, actual);
+    Ok(AutostartStatus { supported: true, enabled: actual })
 }

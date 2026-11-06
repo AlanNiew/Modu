@@ -373,14 +373,16 @@ function AutostartGroup() {
   const [enabled, setEnabled] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  // 便携版/无稳定 exe 路径的环境读不到有效状态：开关置灰并提示（方案 §8 边界）。
+  // 便携版不支持（Rust 侧 supported=false）：开关置灰并提示（方案 §8 边界）。
   const [unsupported, setUnsupported] = useState(false)
 
   useEffect(() => {
     let disposed = false
     void autostartGet()
-      .then((value) => {
-        if (!disposed) setEnabled(value)
+      .then((status) => {
+        if (disposed) return
+        setEnabled(status.enabled)
+        setUnsupported(!status.supported)
       })
       .catch(() => {
         if (!disposed) setUnsupported(true)
@@ -398,8 +400,8 @@ function AutostartGroup() {
       const stop = await listen('modu://tray-action', (event) => {
         if (event.payload !== 'autostart-changed' || disposed) return
         void autostartGet()
-          .then((value) => {
-            if (!disposed) setEnabled(value)
+          .then((status) => {
+            if (!disposed) setEnabled(status.enabled)
           })
           .catch(() => undefined)
       })
@@ -416,9 +418,9 @@ function AutostartGroup() {
     setBusy(true)
     setError(null)
     try {
-      const actual = await autostartSet(next)
-      setEnabled(actual)
-      if (actual !== next) setError('系统未接受该设置，请稍后重试。')
+      const status = await autostartSet(next)
+      setEnabled(status.enabled)
+      if (status.enabled !== next) setError('系统未接受该设置，请稍后重试。')
     } catch (err) {
       setError(`操作失败：${String(err)}`)
     } finally {
@@ -429,13 +431,13 @@ function AutostartGroup() {
   return (
     <Group
       title="开机自动启动"
-      note="仅安装版支持（写入当前用户的启动项）；便携版如果提示失败，请改用手动创建快捷方式。"
+      note="仅安装版支持（写入当前用户的启动项）；便携版此处会自动置灰。"
     >
       <SwitchRow
         label="开机时自动启动墨读"
         description={
           unsupported
-            ? '当前环境不支持（仅安装版可写启动项）'
+            ? '当前为便携版，不支持开机自启（仅安装版可写启动项）'
             : busy
               ? '正在应用…'
               : '登录 Windows 后自动在后台启动，配合托盘可做到随开随读'

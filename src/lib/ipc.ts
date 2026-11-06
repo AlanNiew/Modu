@@ -3,6 +3,7 @@ import type {
   Annotation,
   AnnotationColor,
   AnnotationDraft,
+  AutostartStatus,
   BookSummary,
   Bookmark,
   CloseAction,
@@ -163,8 +164,9 @@ export const hideToTray = () => invoke<void>('hide_to_tray')
 /** 退出程序（托盘与关闭询问共用）。 */
 export const quitApp = () => invoke<void>('quit_app')
 
-/** 开机自启当前是否开启（Windows 写 HKCU\...\Run）。 */
-export const autostartGet = () => invoke<boolean>('autostart_get')
+/** 开机自启状态（supported=false 表示便携版不支持）。 */
+export const autostartGet = () => invoke<AutostartStatus>('autostart_get')
 
-/** 开关开机自启，返回实际生效后的状态。 */
-export const autostartSet = (enabled: boolean) => invoke<boolean>('autostart_set', { enabled })
+/** 开关开机自启，返回实际生效后的状态（便携版会抛错）。 */
+export const autostartSet = (enabled: boolean) =>
+  invoke<AutostartStatus>('autostart_set', { enabled })

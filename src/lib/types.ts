@@ -166,3 +166,9 @@ export interface InstalledFont {
 
 /** 关闭主窗口时的行为（持久化在 Rust 侧 preferences.json，P5）。 */
 export type CloseAction = 'ask' | 'tray' | 'quit'
+
+/** 开机自启状态：supported=false 表示便携版不支持（开关置灰）。 */
+export interface AutostartStatus {
+  supported: boolean
+  enabled: boolean
+}
