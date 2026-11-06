@@ -8,9 +8,11 @@ import {
   RELEASES_URL,
   UPDATER_AVAILABLE,
   checkForUpdates,
+  describeUpdateError,
   downloadAndInstall,
   restartApp,
   type AvailableUpdate,
+  type UpdateErrorInfo,
 } from '../lib/updater'
 
 interface UpdateDialogProps {
@@ -33,13 +35,14 @@ export function UpdateDialog({ open, onOpenChange, initialUpdate }: UpdateDialog
   const [update, setUpdate] = useState<AvailableUpdate | null>(null)
   const [currentVersion, setCurrentVersion] = useState('')
   const [progress, setProgress] = useState({ downloaded: 0, total: null as number | null })
-  const [error, setError] = useState('')
+  // 结构化错误：主因 + 可执行建议（原始报错另存，便于反馈时复制）。
+  const [failure, setFailure] = useState<{ info: UpdateErrorInfo; raw: string } | null>(null)
   const runIdRef = useRef(0)
 
   const runCheck = useCallback(async () => {
     const runId = ++runIdRef.current
     setStage('checking')
-    setError('')
+    setFailure(null)
     setUpdate(null)
     try {
       const found = await checkForUpdates()
@@ -55,7 +58,7 @@ export function UpdateDialog({ open, onOpenChange, initialUpdate }: UpdateDialog
       if (runId !== runIdRef.current) return
       const version = await getVersion().catch(() => '')
       setCurrentVersion(version)
-      setError(String(err))
+      setFailure({ info: describeUpdateError(err), raw: String(err) })
       setStage('error')
     }
   }, [])
@@ -66,7 +69,14 @@ export function UpdateDialog({ open, onOpenChange, initialUpdate }: UpdateDialog
     if (!open) return
     if (!UPDATER_AVAILABLE) {
       setStage('error')
-      setError('开发模式不检查更新（更新只在安装版中生效）。')
+      setFailure({
+        info: {
+          summary: '开发模式不检查更新（更新只在安装版中生效）。',
+          hint: '请用安装版验证更新链路。',
+          retryable: false,
+        },
+        raw: 'UPDATER_AVAILABLE=false（DEV）',
+      })
       return
     }
     if (initialUpdate) {
@@ -82,12 +92,12 @@ export function UpdateDialog({ open, onOpenChange, initialUpdate }: UpdateDialog
     if (!update) return
     setStage('downloading')
     setProgress({ downloaded: 0, total: null })
-    setError('')
+    setFailure(null)
     try {
       await downloadAndInstall(update, (next) => setProgress(next))
       setStage('done')
     } catch (err) {
-      setError(String(err))
+      setFailure({ info: describeUpdateError(err), raw: String(err) })
       setStage('error')
     }
   }, [update])
@@ -203,11 +213,29 @@ export function UpdateDialog({ open, onOpenChange, initialUpdate }: UpdateDialog
               <div className="space-y-3">
                 <div className="flex items-start gap-2 rounded-lg bg-red/10 px-3 py-2.5 text-[12px] text-text">
                   <TriangleAlert size={15} className="mt-0.5 shrink-0 text-red" />
-                  <span className="break-all">检查或安装更新失败：{error}</span>
+                  <span>{failure?.info.summary ?? '检查或安装更新失败。'}</span>
                 </div>
-                <p className="text-[11px] text-overlay0">
-                  可以稍后重试；如果一直失败，请到发布页手动下载安装包覆盖安装（数据不会丢失）。
+                <p className="text-[11px] leading-relaxed text-subtext">
+                  {failure?.info.hint ??
+                    '可以稍后重试；如果一直失败，请到发布页手动下载安装包覆盖安装（数据不会丢失）。'}
                 </p>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void openUrl(RELEASES_URL)}
+                    className="rounded-md border border-surface1 px-2.5 py-1 text-[11px] text-subtext transition hover:bg-surface0 hover:text-text"
+                  >
+                    打开发布页手动下载
+                  </button>
+                </div>
+                {failure?.raw && (
+                  <details className="text-[10.5px] text-overlay0">
+                    <summary className="cursor-pointer select-none">错误详情（反馈时请复制）</summary>
+                    <p className="mt-1 break-all rounded border border-surface0/70 bg-crust/40 px-2 py-1.5 font-mono">
+                      {failure.raw}
+                    </p>
+                  </details>
+                )}
               </div>
             )}
           </div>
