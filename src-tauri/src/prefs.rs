@@ -43,22 +43,48 @@ pub fn load(data_dir: &Path) -> Preferences {
             log::warn!("preferences.json 解析失败，使用默认值: {err}");
             Preferences::default()
         }),
-        Err(_) => Preferences::default(),
+        Err(err) => {
+            // 不存在是正常首次运行；其他错误（权限/占用）记下来便于排查。
+            if err.kind() != std::io::ErrorKind::NotFound {
+                log::warn!("读取 preferences.json 失败，使用默认值: {err}");
+            }
+            Preferences::default()
+        }
     }
 }
 
-/// 原子写入偏好（先写临时文件再 rename，避免断电留下半个 JSON）。
+/// 原子写入偏好（写临时文件 → fsync → rename），避免断电留下半个 JSON。
 pub fn save(data_dir: &Path, prefs: &Preferences) -> AppResult<()> {
+    use std::io::Write as _;
+
     let path = prefs_path(data_dir);
     let tmp = path.with_extension("json.tmp");
     let json = serde_json::to_vec_pretty(prefs)
         .map_err(|e| AppError::Internal(format!("序列化偏好失败: {e}")))?;
-    std::fs::write(&tmp, json)
-        .map_err(|e| AppError::Io(format!("写入偏好失败: {e}")))?;
+
+    let write = || -> std::io::Result<()> {
+        let mut file = std::fs::File::create(&tmp)?;
+        file.write_all(&json)?;
+        // rename 本身是原子的，但数据可能还在页缓存里；落盘后再换名才真正防断电。
+        file.sync_all()?;
+        Ok(())
+    };
+    if let Err(err) = write() {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(AppError::Io(format!("写入偏好失败: {err}")));
+    }
     std::fs::rename(&tmp, &path).map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
         AppError::Io(format!("保存偏好失败: {e}"))
     })
+}
+
+/// 改「关闭主窗口」行为并落盘（设置页与托盘共用这一处规则）。
+pub fn set_close_action(data_dir: &Path, action: CloseAction) -> AppResult<CloseAction> {
+    let mut preferences = load(data_dir);
+    preferences.close_action = action;
+    save(data_dir, &preferences)?;
+    Ok(action)
 }
 
 #[cfg(test)]
@@ -84,11 +110,15 @@ mod tests {
     #[test]
     fn roundtrip_close_action() {
         let dir = scratch("prefs-roundtrip");
-        let prefs = Preferences { close_action: CloseAction::Tray };
+        let prefs = Preferences {
+            close_action: CloseAction::Tray,
+        };
         save(&dir, &prefs).unwrap();
         assert_eq!(load(&dir).close_action, CloseAction::Tray);
 
-        let prefs = Preferences { close_action: CloseAction::Quit };
+        let prefs = Preferences {
+            close_action: CloseAction::Quit,
+        };
         save(&dir, &prefs).unwrap();
         assert_eq!(load(&dir).close_action, CloseAction::Quit);
         // 不能留下临时文件
@@ -105,10 +135,12 @@ mod tests {
     #[test]
     fn serde_shape_matches_frontend_contract() {
         // 前端按 camelCase 读写：字段名必须稳定（契约测试）。
-        let json = serde_json::to_string(&Preferences { close_action: CloseAction::Quit }).unwrap();
+        let json = serde_json::to_string(&Preferences {
+            close_action: CloseAction::Quit,
+        })
+        .unwrap();
         assert!(json.contains("\"closeAction\":\"quit\""), "实际: {json}");
-        let parsed: Preferences =
-            serde_json::from_str(r#"{"closeAction":"tray"}"#).unwrap();
+        let parsed: Preferences = serde_json::from_str(r#"{"closeAction":"tray"}"#).unwrap();
         assert_eq!(parsed.close_action, CloseAction::Tray);
     }
 }

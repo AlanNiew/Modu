@@ -1,3 +1,4 @@
+import type { CloseAction } from '../lib/types'
 import type { ReadingFlow } from './theme'
 import { FONT_STACKS, THEME_OPTIONS } from './theme'
 
@@ -17,10 +18,7 @@ export const ALIGN_OPTIONS: ReadonlyArray<{ id: 'justify' | 'left'; label: strin
 ]
 
 /** 关闭主窗口的行为选项（P5，值与 Rust prefs::CloseAction 的 camelCase 一致）。 */
-export const CLOSE_ACTION_OPTIONS: ReadonlyArray<{
-  id: 'ask' | 'tray' | 'quit'
-  label: string
-}> = [
+export const CLOSE_ACTION_OPTIONS: ReadonlyArray<{ id: CloseAction; label: string }> = [
   { id: 'ask', label: '每次询问' },
   { id: 'tray', label: '最小化到托盘' },
   { id: 'quit', label: '直接退出' },

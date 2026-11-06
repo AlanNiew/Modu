@@ -1,3 +1,4 @@
+mod autostart;
 mod commands;
 mod convert;
 mod db;
@@ -165,8 +166,16 @@ pub fn run() {
                 }
                 prefs::CloseAction::Ask => {
                     // 交给前端弹一次性询问框；用户选择后由命令落盘并执行。
+                    // 前端监听尚未就绪（极早期启动/前端崩溃）时事件会失败：
+                    // 此时退回「最小化到托盘」，保证窗口不会被一个弹不出来的
+                    // 对话框永久卡住（比直接退出更安全）。
                     api.prevent_close();
-                    let _ = tauri::Emitter::emit(app, tray::EVENT_CLOSE_REQUESTED, ());
+                    if tauri::Emitter::emit(app, tray::EVENT_CLOSE_REQUESTED, ()).is_err() {
+                        log::warn!("关闭询问事件发送失败，退回最小化到托盘");
+                        if let Err(err) = tray::hide_main_window(app) {
+                            log::warn!("隐藏窗口失败: {err}");
+                        }
+                    }
                 }
             }
         })
@@ -268,4 +277,3 @@ mod tests {
         assert!(!target.exists());
     }
 }
-

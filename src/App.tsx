@@ -151,24 +151,31 @@ export default function App() {
     const unlisteners: Array<() => void> = []
     let disposed = false
     void (async () => {
-      const close = await listen('modu://close-requested', () => {
-        setCloseConfirmOpen(true)
-      })
-      const trayAction = await listen<string>('modu://tray-action', (event) => {
-        const action = event.payload
-        if (action === 'settings') {
-          openSettings(null)
-        } else if (action === 'check-update') {
-          setUpdateOpen(true)
-        }
-        // 'autostart-changed'：状态由 Rust/设置页各自刷新，前端无需额外动作。
-      })
-      if (disposed) {
-        close()
-        trayAction()
-        return
+      // 逐个 try/catch：第二个 listen 失败不能把第一个泄漏掉（会双弹窗）。
+      try {
+        const close = await listen('modu://close-requested', () => {
+          setCloseConfirmOpen(true)
+        })
+        if (disposed) close()
+        else unlisteners.push(close)
+      } catch (err) {
+        console.error('[app] 监听关闭询问事件失败', err)
       }
-      unlisteners.push(close, trayAction)
+      try {
+        const trayAction = await listen<string>('modu://tray-action', (event) => {
+          const action = event.payload
+          if (action === 'settings') {
+            openSettings(null)
+          } else if (action === 'check-update') {
+            setUpdateOpen(true)
+          }
+          // 'autostart-changed'：状态由 Rust/设置页各自刷新，前端无需额外动作。
+        })
+        if (disposed) trayAction()
+        else unlisteners.push(trayAction)
+      } catch (err) {
+        console.error('[app] 监听托盘事件失败', err)
+      }
     })()
     return () => {
       disposed = true

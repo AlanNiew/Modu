@@ -319,6 +319,7 @@ function BehaviorSection() {
 
 /** 关闭主窗口时的行为（持久化在 Rust 侧，托盘菜单与设置页共用）。 */
 function CloseBehaviorGroup() {
+  // null = 还没读到：此时不假装当前值是 ask，只显示读取中/错误。
   const [action, setAction] = useState<CloseAction | null>(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -329,7 +330,7 @@ function CloseBehaviorGroup() {
         if (!disposed) setAction(value)
       })
       .catch((err) => {
-        if (!disposed) setError(String(err))
+        if (!disposed) setError(`读取当前设置失败：${String(err)}`)
       })
     return () => {
       disposed = true
@@ -342,7 +343,7 @@ function CloseBehaviorGroup() {
       const saved = await closePolicySet(next)
       setAction(saved)
     } catch (err) {
-      setError(String(err))
+      setError(`保存失败：${String(err)}`)
     }
   }, [])
 
@@ -351,19 +352,24 @@ function CloseBehaviorGroup() {
       title="关闭主窗口时"
       note="选择「每次询问」时，第一次关闭会弹窗让你决定，并可勾选「不再询问」；托盘菜单里也能随时改。"
     >
-      <Segmented
-        options={CLOSE_ACTION_OPTIONS.map(({ id, label }) => ({ id, label }))}
-        value={action ?? 'ask'}
-        onChange={(id) => void change(id)}
-        columns={3}
-      />
-      {action === null && <p className="text-[11px] text-overlay0">正在读取当前设置…</p>}
+      {action === null ? (
+        <p className="text-[11px] text-overlay0">
+          {error ? <span className="text-red">{error}</span> : '正在读取当前设置…'}
+        </p>
+      ) : (
+        <Segmented
+          options={CLOSE_ACTION_OPTIONS.map(({ id, label }) => ({ id, label }))}
+          value={action}
+          onChange={(id) => void change(id)}
+          columns={3}
+        />
+      )}
       {action === 'tray' && (
         <p className="text-[11px] text-overlay0">
           关闭后应用继续在托盘运行；右键托盘图标可「退出墨读」。
         </p>
       )}
-      {error && <p className="text-[11px] text-red">{error}</p>}
+      {action !== null && error && <p className="text-[11px] text-red">{error}</p>}
     </Group>
   )
 }
@@ -397,16 +403,20 @@ function AutostartGroup() {
     let disposed = false
     let unlisten: (() => void) | undefined
     void (async () => {
-      const stop = await listen('modu://tray-action', (event) => {
-        if (event.payload !== 'autostart-changed' || disposed) return
-        void autostartGet()
-          .then((status) => {
-            if (!disposed) setEnabled(status.enabled)
-          })
-          .catch(() => undefined)
-      })
-      if (disposed) stop()
-      else unlisten = stop
+      try {
+        const stop = await listen('modu://tray-action', (event) => {
+          if (event.payload !== 'autostart-changed' || disposed) return
+          void autostartGet()
+            .then((status) => {
+              if (!disposed) setEnabled(status.enabled)
+            })
+            .catch(() => undefined)
+        })
+        if (disposed) stop()
+        else unlisten = stop
+      } catch (err) {
+        console.error('[settings] 监听托盘事件失败', err)
+      }
     })()
     return () => {
       disposed = true

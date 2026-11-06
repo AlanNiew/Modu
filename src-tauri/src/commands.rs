@@ -6,16 +6,17 @@ use std::sync::Arc;
 use serde::Serialize;
 use tauri::State;
 
-use crate::fonts;
-use crate::prefs;
-use crate::tray;
-use crate::library::{
-    self, Annotation, AnnotationColor, AnnotationInput, Bookmark, BookSummary, ImportOutcome,
-    ListOptions, ProgressRecord,
-};
+use crate::autostart;
 use crate::epub::{self, Package};
 use crate::error::{AppError, AppResult};
+use crate::fonts;
+use crate::library::{
+    self, Annotation, AnnotationColor, AnnotationInput, BookSummary, Bookmark, ImportOutcome,
+    ListOptions, ProgressRecord,
+};
+use crate::prefs;
 use crate::state::AppState;
+use crate::tray;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -100,7 +101,10 @@ pub fn book_section_html(
     if convert_traditional {
         html = crate::convert::t2s(&html);
     }
-    Ok(SectionHtml { html, path: item.path.clone() })
+    Ok(SectionHtml {
+        html,
+        path: item.path.clone(),
+    })
 }
 
 /// 打开系统文件选择器（Rust 侧弹窗，路径不经过 fs 插件 scope）。
@@ -149,7 +153,10 @@ pub fn library_import(
 
 /// 书架列表：排序 / 筛选 / 关键词。
 #[tauri::command]
-pub fn library_list(state: State<'_, AppState>, options: ListOptions) -> AppResult<Vec<BookSummary>> {
+pub fn library_list(
+    state: State<'_, AppState>,
+    options: ListOptions,
+) -> AppResult<Vec<BookSummary>> {
     library::list(&state.db, &options)
 }
 
@@ -313,10 +320,7 @@ pub fn write_text_file(path: String, contents: String) -> AppResult<()> {
 }
 
 #[tauri::command]
-pub fn annotation_remove(
-    state: State<'_, AppState>,
-    annotation_id: i64,
-) -> AppResult<()> {
+pub fn annotation_remove(state: State<'_, AppState>, annotation_id: i64) -> AppResult<()> {
     library::annotation_remove(&state.db, annotation_id)
 }
 
@@ -369,89 +373,43 @@ pub fn close_policy_get(state: State<'_, AppState>) -> AppResult<prefs::CloseAct
     Ok(prefs::load(&state.data_dir).close_action)
 }
 
-/// 写入「关闭主窗口」行为并返回落盘后的值。
+/// 写入「关闭主窗口」行为并返回落盘后的值（规则在 prefs，托盘单选同步在 tray）。
 #[tauri::command]
 pub fn close_policy_set(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     action: prefs::CloseAction,
 ) -> AppResult<prefs::CloseAction> {
-    let mut preferences = prefs::load(&state.data_dir);
-    preferences.close_action = action;
-    prefs::save(&state.data_dir, &preferences)?;
-    // 托盘菜单里的单选标记同步（两处都能改，不能各显示各的）。
-    tray::sync_close_action(&app, action);
-    Ok(action)
+    let saved = prefs::set_close_action(&state.data_dir, action)?;
+    tray::sync_close_action(&app, saved);
+    Ok(saved)
 }
 
-/// 最小化到托盘（关闭询问里选「最小化」、或前端显式调用）。
+/// 最小化到托盘（关闭询问里选「最小化」）。
 #[tauri::command]
 pub fn hide_to_tray(app: tauri::AppHandle) -> AppResult<()> {
-    use tauri::Manager;
-
-    tray::save_window_state(&app);
-    if let Some(window) = app.get_webview_window("main") {
-        window
-            .hide()
-            .map_err(|e| AppError::Internal(format!("隐藏窗口失败: {e}")))?;
-    }
-    Ok(())
+    tray::hide_main_window(&app)
 }
 
 /// 退出程序（关闭询问里选「退出」）。
 #[tauri::command]
 pub fn quit_app(app: tauri::AppHandle) {
-    tray::save_window_state(&app);
-    app.exit(0);
+    tray::quit_app(&app);
 }
 
-/// 开机自启状态：`supported` 区分「便携版不支持」与「只是没开」。
-#[derive(Debug, Clone, Copy, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AutostartStatus {
-    pub supported: bool,
-    pub enabled: bool,
-}
-
-/// 开机自启当前状态（便携版 supported=false，前端据此置灰并提示）。
+/// 开机自启状态（便携版 supported=false，前端据此置灰）。
 #[tauri::command]
-pub fn autostart_get(app: tauri::AppHandle) -> AppResult<AutostartStatus> {
-    use tauri_plugin_autostart::ManagerExt;
-
-    if tray::is_portable() {
-        return Ok(AutostartStatus { supported: false, enabled: false });
-    }
-    let enabled = app
-        .autolaunch()
-        .is_enabled()
-        .map_err(|e| AppError::Internal(format!("读取开机自启状态失败: {e}")))?;
-    Ok(AutostartStatus { supported: true, enabled })
+pub fn autostart_get(app: tauri::AppHandle) -> AppResult<autostart::AutostartStatus> {
+    autostart::status(&app)
 }
 
-/// 开关开机自启，返回实际生效后的状态（写入失败会回滚为原值）。
+/// 开关开机自启，返回实际生效后的状态（设置页改完同步托盘勾选）。
 #[tauri::command]
-pub fn autostart_set(app: tauri::AppHandle, enabled: bool) -> AppResult<AutostartStatus> {
-    use tauri_plugin_autostart::ManagerExt;
-
-    if tray::is_portable() {
-        return Err(AppError::Validation(
-            "便携版不支持开机自启，请使用安装版".into(),
-        ));
-    }
-    let manager = app.autolaunch();
-    if enabled {
-        manager
-            .enable()
-            .map_err(|e| AppError::Internal(format!("开启开机自启失败: {e}")))?;
-    } else {
-        manager
-            .disable()
-            .map_err(|e| AppError::Internal(format!("关闭开机自启失败: {e}")))?;
-    }
-    let actual = manager
-        .is_enabled()
-        .map_err(|e| AppError::Internal(format!("读取开机自启状态失败: {e}")))?;
-    // 托盘菜单里的勾选同步（设置页改完，托盘不能还是旧状态）。
-    tray::sync_autostart_checked(&app, actual);
-    Ok(AutostartStatus { supported: true, enabled: actual })
+pub fn autostart_set(
+    app: tauri::AppHandle,
+    enabled: bool,
+) -> AppResult<autostart::AutostartStatus> {
+    let status = autostart::set(&app, enabled)?;
+    tray::sync_autostart_checked(&app, status.enabled);
+    Ok(status)
 }
