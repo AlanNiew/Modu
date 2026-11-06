@@ -6,6 +6,7 @@ use std::sync::Arc;
 use serde::Serialize;
 use tauri::State;
 
+use crate::fonts;
 use crate::library::{
     self, Annotation, AnnotationColor, AnnotationInput, Bookmark, BookSummary, ImportOutcome,
     ListOptions, ProgressRecord,
@@ -301,4 +302,28 @@ pub fn reveal_data_dir(app: tauri::AppHandle, state: State<'_, AppState>) -> App
         .reveal_item_in_dir(&dir)
         .map_err(|e| AppError::Internal(format!("打开数据目录失败: {e}")))?;
     Ok(dir.to_string_lossy().into_owned())
+}
+
+// ---------------------------------------------------------------------------
+// 字体（P3）：用户自定义 ttf/otf/ttc 的导入/列表/删除
+// ---------------------------------------------------------------------------
+
+/// 解析并安装用户选择的字体文件；返回 {file, family}。
+///
+/// 路径来自系统文件对话框（用户的显式选择）；删除与下发只认 fonts 目录
+/// 内的纯文件名。列表以 fonts 目录的解析结果为准，`font_list` 用于对账。
+#[tauri::command]
+pub fn font_import(state: State<'_, AppState>, path: String) -> AppResult<fonts::InstalledFont> {
+    fonts::install(&state.data_dir, &path)
+}
+
+/// 重新解析 fonts 目录（用户手动删文件后对账用）。
+#[tauri::command]
+pub fn font_list(state: State<'_, AppState>) -> AppResult<Vec<fonts::InstalledFont>> {
+    fonts::list(&state.data_dir)
+}
+
+#[tauri::command]
+pub fn font_remove(state: State<'_, AppState>, file: String) -> AppResult<()> {
+    fonts::remove(&state.data_dir, &file)
 }

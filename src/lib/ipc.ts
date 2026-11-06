@@ -6,6 +6,7 @@ import type {
   BookSummary,
   Bookmark,
   ImportOutcome,
+  InstalledFont,
   ListOptions,
   OpenedBookInfo,
   ProgressRecord,
@@ -128,3 +129,17 @@ export const writeTextFile = (path: string, contents: string) =>
 
 /** 在资源管理器中显示出数据目录（书库、封面、批注数据所在处），返回实际路径。 */
 export const revealDataDir = () => invoke<string>('reveal_data_dir')
+
+// ---------------------------------------------------------------------------
+// 自定义字体（P3）
+// ---------------------------------------------------------------------------
+
+/** 解析并安装用户字体文件（路径来自系统文件对话框），返回 {file, family}。 */
+export const importFont = (path: string) =>
+  invoke<InstalledFont>('font_import', { path })
+
+/** 重新扫描数据目录 fonts/（与磁盘对账）。 */
+export const listFonts = () => invoke<InstalledFont[]>('font_list')
+
+/** 删除一个自定义字体（纯文件名）。 */
+export const removeFont = (file: string) => invoke<void>('font_remove', { file })

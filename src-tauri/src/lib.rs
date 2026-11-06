@@ -2,6 +2,7 @@ mod commands;
 mod db;
 mod epub;
 mod error;
+mod fonts;
 mod library;
 mod protocol;
 mod state;
@@ -158,6 +159,9 @@ pub fn run() {
             commands::annotation_export_markdown,
             commands::write_text_file,
             commands::reveal_data_dir,
+            commands::font_import,
+            commands::font_list,
+            commands::font_remove,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

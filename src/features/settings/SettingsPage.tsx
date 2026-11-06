@@ -1,14 +1,17 @@
 import { getVersion } from '@tauri-apps/api/app'
-import { Check, Info, RotateCcw } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { open } from '@tauri-apps/plugin-dialog'
+import { Check, Info, Loader2, RotateCcw, Trash2, Upload } from 'lucide-react'
+import { useCallback, useEffect, useState } from 'react'
 
 import { Segmented, SliderRow, SwitchRow } from '../../components/option-controls'
 import {
   ALIGN_OPTIONS,
   FLOW_OPTIONS,
+  FONT_PRESETS,
   indentEnabledToEm,
   indentEmToEnabled,
 } from '../../renderer/reading-options'
+import { importFont, listFonts, removeFont } from '../../lib/ipc'
 import { cn } from '../../lib/cn'
 import {
   THEME_OPTIONS,
@@ -16,6 +19,7 @@ import {
   themeSwatch,
 } from '../../renderer/theme'
 import { fontStackLabel, useReaderSettings } from '../../store/settings'
+import type { InstalledFont } from '../../lib/types'
 
 export type SettingsTabId = 'appearance' | 'typography' | 'conversion' | 'behavior' | 'about'
 
@@ -159,6 +163,7 @@ function TypographySection() {
   const fontFamily = useReaderSettings((state) => state.settings.fontFamily)
   const patch = useReaderSettings((state) => state.patch)
   const reset = useReaderSettings((state) => state.reset)
+  const setFontFamily = useReaderSettings((state) => state.setFontFamily)
 
   return (
     <>
@@ -242,12 +247,30 @@ function TypographySection() {
         />
       </Group>
 
-      <Group title="字体" note="P3 将开放：预设字体列表扩充 + 导入本地 ttf/otf 字体文件。当前可在阅读页快速面板快速切换宋 / 黑 / 楷。">
-        <p className="text-[12px] text-subtext">
-          当前字体：
-          <span className="font-medium text-text">{fontStackLabel(fontFamily)}</span>
-        </p>
+      <Group
+        title="字体"
+        note="预设命中不了（本机未安装）时会回退到系统默认；「霞鹜文楷」等免费字体需本机已安装或从下方导入字体文件。"
+      >
+        <div className="space-y-2">
+          <Segmented
+            options={FONT_PRESETS.map(({ id, label, hint }) => ({ id, label, title: hint }))}
+            value={
+              // 当前字体栈命中某个预设就用其 id；自定义字体/未知栈显示空。
+              FONT_PRESETS.find((preset) => preset.stack === fontFamily)?.id ?? ''
+            }
+            onChange={(id) => {
+              const preset = FONT_PRESETS.find((item) => item.id === id)
+              if (preset) setFontFamily(preset.stack)
+            }}
+            columns={5}
+          />
+          <p className="text-[11px] text-overlay0">
+            悬停预览各字体类型；当前字体：
+            <span className="font-medium text-text">{fontStackLabel(fontFamily)}</span>
+          </p>
+        </div>
       </Group>
+      <CustomFontsGroup />
 
       <section className="space-y-3 border-t border-surface0/60 pt-5">
         <SectionTitle>恢复默认</SectionTitle>
@@ -293,6 +316,144 @@ function BehaviorSection() {
         note="托盘与关闭询问依赖 Rust 侧生命周期，将在后续阶段开放。"
       />
     </>
+  )
+}
+
+/**
+ * 自定义字体管理（P3）：文件复制进 `<数据目录>/fonts/`，家族名由 Rust
+ * 解析后在这里与磁盘对账。删除只影响阅读排版（内置预设不受影响）。
+ */
+
+/** 磁盘对账：保留仍在盘上的条目，并补上盘上新增的解析结果。 */
+function mergeWithDisk(
+  fonts: InstalledFont[],
+  onDisk: InstalledFont[],
+): InstalledFont[] {
+  const diskFiles = new Set(onDisk.map((font) => font.file))
+  return [
+    ...fonts.filter((font) => diskFiles.has(font.file)),
+    ...onDisk.filter((font) => !fonts.some((item) => item.file === font.file)),
+  ]
+}
+
+function CustomFontsGroup() {
+  const customFonts = useReaderSettings((state) => state.customFonts)
+  const currentFamily = useReaderSettings((state) => state.settings.fontFamily)
+  const setCustomFonts = useReaderSettings((state) => state.setCustomFonts)
+  const setFontFamily = useReaderSettings((state) => state.setFontFamily)
+  const [importing, setImporting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const handleImport = useCallback(async () => {
+    setError(null)
+    setImporting(true)
+    try {
+      const ctx = useReaderSettings.getState()
+      // 导入前先与磁盘对账：丢掉已被手动删掉的条目，避免幽灵项。
+      const onDisk = await listFonts()
+      let fonts = mergeWithDisk(ctx.customFonts, onDisk)
+      const picked = await open({
+        multiple: true,
+        filters: [{ name: '字体文件', extensions: ['ttf', 'otf', 'ttc', 'woff', 'woff2'] }],
+      })
+      const paths = Array.isArray(picked) ? picked : picked ? [picked] : []
+      const fresh: InstalledFont[] = []
+      for (const path of paths) {
+        // 同名文件重复导入视为替换（Rust 侧覆盖写文件，家族名随之更新）。
+        // 若中途某本失败，前面已写入磁盘的字体会在下一次导入的对账中
+        // 自动收编（installed 期间未写 store 不会丢），不需要回滚事务。
+        const installed = await importFont(path)
+        fonts = fonts.filter((font) => font.file !== installed.file)
+        fresh.push(installed)
+      }
+      if (fresh.length > 0) {
+        fonts = [...fonts, ...fresh]
+        setCustomFonts(fonts)
+        // 应用最后导入的字体（多个一起导时用户期望直接看到效果）。
+        setFontFamily(fresh[fresh.length - 1].family)
+      } else if (paths.length === 0) {
+        // 用户在对话框里取消：仍然把对账结果写回，静默清理幽灵项。
+        if (fonts.length !== ctx.customFonts.length) setCustomFonts(fonts)
+      }
+    } catch (err) {
+      setError(String(err))
+    } finally {
+      setImporting(false)
+    }
+  }, [setCustomFonts, setFontFamily])
+
+  const handleRemove = useCallback(
+    async (font: InstalledFont) => {
+      try {
+        await removeFont(font.file)
+        const state = useReaderSettings.getState()
+        const next = state.customFonts.filter((item) => item.file !== font.file)
+        setCustomFonts(next)
+        // 删除的恰是正在用的字体：回退到默认宋体栈，而不是残留一个
+        // 已不存在的 @font-face 家族名（否则正文会悄悄落到系统字体，
+        // 与 UI 的「当前高亮」口径不一致）。
+        if (state.settings.fontFamily === font.family) {
+          setFontFamily(FONT_PRESETS[0].stack)
+        }
+      } catch (err) {
+        setError(String(err))
+      }
+    },
+    [setCustomFonts, setFontFamily],
+  )
+
+  return (
+    <Group
+      title="自定义字体"
+      note="支持 ttf / otf / ttc / woff / woff2；woff 系无裸 name 表，呈现名取文件主名。导入后可在上方「字体」里选择（也可以直接点条目应用）。"
+    >
+      {error && <p className="text-[11px] text-red">{error}</p>}
+      {customFonts.length === 0 ? (
+        <p className="text-[11px] text-overlay0">还没有导入自定义字体。</p>
+      ) : (
+        <ul className="space-y-1.5">
+          {customFonts.map((font) => (
+            <li
+              key={font.file}
+              className={cn(
+                'flex items-center gap-2 rounded-lg border bg-mantle/40 px-3 py-2',
+                currentFamily === font.family
+                  ? 'border-blue bg-blue/10'
+                  : 'border-surface0',
+              )}
+            >
+              <button
+                type="button"
+                className="min-w-0 flex-1 text-left"
+                onClick={() => setFontFamily(font.family)}
+                title="应用该字体"
+              >
+                <span className="block truncate text-[12.5px] text-text">{font.family}</span>
+                <span className="block truncate text-[10px] text-overlay0">{font.file}</span>
+              </button>
+              {currentFamily === font.family && <Check size={14} className="shrink-0 text-blue" />}
+              <button
+                type="button"
+                title="删除该字体（内置预设不受影响）"
+                onClick={() => void handleRemove(font)}
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-overlay0 transition hover:bg-surface0 hover:text-red"
+              >
+                <Trash2 size={14} />
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <button
+        type="button"
+        onClick={() => void handleImport()}
+        disabled={importing}
+        className="flex items-center gap-1.5 rounded-lg border border-surface0 px-3 py-2 text-[12px] text-subtext transition hover:border-surface1 hover:text-text disabled:opacity-50"
+      >
+        {importing ? <Loader2 size={13} className="animate-spin" /> : <Upload size={13} />}
+        {importing ? '正在导入…' : '导入字体文件…'}
+      </button>
+    </Group>
   )
 }
 

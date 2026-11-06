@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef } from 'react'
 import './vendor/foliate/view.js'
 import type { FoliateRelocateDetail, FoliateView } from './vendor/foliate/view.js'
-import type { Annotation, AnnotationDraft, OpenedBookInfo } from '../lib/types'
+import type { Annotation, AnnotationDraft, InstalledFont, OpenedBookInfo } from '../lib/types'
+import { customFontFaces } from '../lib/protocol'
 import type { LocatorAnchor, ReaderLocator } from '../lib/locator'
 import { createFoliateBook, type FoliateBook } from './foliateBook'
 import { buildReadingCss, type ReadingSettings } from './theme'
@@ -45,6 +46,8 @@ export interface RelocateState {
 interface ReaderViewProps {
   book: OpenedBookInfo
   settings: ReadingSettings
+  /** 用户导入的自定义字体：@font-face 注册进章节文档（P3）。 */
+  customFonts?: InstalledFont[]
   /** 本书全部批注；按当前章节过滤后画在正文上 */
   annotations?: Annotation[]
   onReady?: (api: ReaderApi) => void
@@ -61,6 +64,7 @@ interface ReaderViewProps {
 export function ReaderView({
   book,
   settings,
+  customFonts,
   annotations,
   onReady,
   onRelocate,
@@ -75,6 +79,7 @@ export function ReaderView({
   // 最近一次阅读位置：重排（字号/行高/版心变化）后要用它把读者放回原处
   const lastPositionRef = useRef<{ index: number; fraction: number } | null>(null)
   const settingsRef = useRef(settings)
+  const customFontsRef = useRef(customFonts)
   const annotationsRef = useRef<Annotation[]>(annotations ?? [])
   const docRef = useRef<Document | null>(null)
   const renderAnnotationsRef = useRef<((doc: Document) => void) | null>(null)
@@ -89,6 +94,7 @@ export function ReaderView({
   })
 
   settingsRef.current = settings
+  customFontsRef.current = customFonts
   callbacksRef.current = {
     onReady,
     onRelocate,
@@ -99,26 +105,31 @@ export function ReaderView({
     onAnnotationActivate,
   }
 
-  const applySettings = useCallback((view: FoliateView, next: ReadingSettings) => {
-    const renderer = view.renderer
-    if (!renderer) return
-    // 布局属性必须设在 renderer（<foliate-paginator>）上：
-    // foliate-view 只是 closed shadow root 外壳，不会把属性转发给 renderer。
-    renderer.setAttribute('flow', next.flow)
-    if (next.flow === 'paginated') {
-      renderer.setAttribute('max-column-count', '1')
-    } else {
-      // 滚动模式不需要限列；留着会让内容被拆成多列
-      renderer.removeAttribute('max-column-count')
-    }
-    // 页边距是用户可调的（v0.4 重新独立出来），映射到 paginator 的 margin
-    renderer.setAttribute('margin', `${next.pagePadding}px`)
-    // 行宽（版心）是用户可调的，直接交给 paginator 的 max-inline-size
-    renderer.setAttribute('max-inline-size', `${next.pageWidth}px`)
-    renderer.setStyles(buildReadingCss(next))
-    // 字号/行高/版心变了要重新分栏；render() 会保留当前锚点
-    renderer.render?.()
-  }, [])
+  const applySettings = useCallback(
+    (view: FoliateView, next: ReadingSettings, fonts?: InstalledFont[]) => {
+      const renderer = view.renderer
+      if (!renderer) return
+      // 布局属性必须设在 renderer（<foliate-paginator>）上：
+      // foliate-view 只是 closed shadow root 外壳，不会把属性转发给 renderer。
+      renderer.setAttribute('flow', next.flow)
+      if (next.flow === 'paginated') {
+        renderer.setAttribute('max-column-count', '1')
+      } else {
+        // 滚动模式不需要限列；留着会让内容被拆成多列
+        renderer.removeAttribute('max-column-count')
+      }
+      // 页边距是用户可调的（v0.4 重新独立出来），映射到 paginator 的 margin
+      renderer.setAttribute('margin', `${next.pagePadding}px`)
+      // 行宽（版心）是用户可调的，直接交给 paginator 的 max-inline-size
+      renderer.setAttribute('max-inline-size', `${next.pageWidth}px`)
+      // @font-face 必须和正文样式在同一次 setStyles 里下发（章节文档 reload
+      // 后样式会被重置），所以把自定义字体的注册拼在阅读 CSS 后面。
+      renderer.setStyles(buildReadingCss(next) + customFontFaces(fonts))
+      // 字号/行高/版心变了要重新分栏；render() 会保留当前锚点
+      renderer.render?.()
+    },
+    [],
+  )
 
   useEffect(() => {
     const host = hostRef.current
@@ -620,7 +631,7 @@ export function ReaderView({
           }
         }) as EventListener)
 
-        applySettings(view, settingsRef.current)
+        applySettings(view, settingsRef.current, customFontsRef.current)
         await view.init({ showTextStart: true })
         if (cancelled) return
         callbacksRef.current.onReady?.(api)
@@ -647,12 +658,13 @@ export function ReaderView({
   // 阅读设置变化：重新注入 CSS 并重排。
   // 拖动滑杆会连续触发 settings，重排本身很贵（要重新分页），
   // 因此做 100ms 防抖；重排后按最近位置复位，避免「一调字号就被扔回章首」。
+  // customFonts 变化（导入/删除自定义字体）同样走这里重新 @font-face。
   useEffect(() => {
     const view = viewRef.current
     if (!view?.renderer) return
     const timer = window.setTimeout(() => {
       const position = lastPositionRef.current
-      applySettings(view, settings)
+      applySettings(view, settings, customFonts)
       if (position) {
         void Promise.resolve(
           view.renderer?.goTo?.({ index: position.index, anchor: position.fraction }),
@@ -660,7 +672,7 @@ export function ReaderView({
       }
     }, 100)
     return () => window.clearTimeout(timer)
-  }, [settings, applySettings])
+  }, [settings, customFonts, applySettings])
 
   // 批注增删改后重画当前章节（不用重建阅读器）
   useEffect(() => {

@@ -7,6 +7,7 @@ import {
   type ReadingSettings,
   type ThemeId,
 } from '../renderer/theme'
+import type { InstalledFont } from '../lib/types'
 
 /**
  * 阅读排版设置：全局共享、写入 localStorage。
@@ -21,10 +22,14 @@ import {
 interface SettingsState {
   settings: ReadingSettings
   autoCheck: boolean
+  /** 用户导入的自定义字体（文件在数据目录 fonts/ 下；Rust font_list 为准）。 */
+  customFonts: InstalledFont[]
   patch: (partial: Partial<ReadingSettings>) => void
   setTheme: (theme: ThemeId) => void
   setFontFamilyKind: (kind: 'serif' | 'sans' | 'kai') => void
+  setFontFamily: (fontFamily: string) => void
   setAutoCheck: (enabled: boolean) => void
+  setCustomFonts: (fonts: InstalledFont[]) => void
   reset: () => void
 }
 
@@ -98,12 +103,35 @@ function readLegacyAutoCheck(): boolean {
   }
 }
 
-function migrate(persisted: unknown): { settings: ReadingSettings; autoCheck: boolean } {
+function sanitizeCustomFonts(saved: unknown): InstalledFont[] {
+  if (!Array.isArray(saved)) return []
+  return saved.filter(
+    (font): font is InstalledFont =>
+      typeof font === 'object' &&
+      font !== null &&
+      typeof (font as InstalledFont).family === 'string' &&
+      (font as InstalledFont).family.length > 0 &&
+      typeof (font as InstalledFont).file === 'string' &&
+      (font as InstalledFont).file.length > 0 &&
+      // 协议只认纯文件名：持久化数据同样过一遍这道闸，避免 URL 注入。
+      !/[\\/]/.test((font as InstalledFont).file) &&
+      !(font as InstalledFont).file.includes('..'),
+  )
+}
+
+function migrate(persisted: unknown): {
+  settings: ReadingSettings
+  autoCheck: boolean
+  customFonts: InstalledFont[]
+} {
   const saved = (persisted as { settings?: Partial<ReadingSettings> } | undefined)?.settings
   const autoCheck = (persisted as { autoCheck?: boolean } | undefined)?.autoCheck
   return {
     settings: normalizeSettings(saved, { dropLegacyKeys: true }),
     autoCheck: typeof autoCheck === 'boolean' ? autoCheck : readLegacyAutoCheck(),
+    customFonts: sanitizeCustomFonts(
+      (persisted as { customFonts?: unknown } | undefined)?.customFonts,
+    ),
   }
 }
 
@@ -112,28 +140,40 @@ export const useReaderSettings = create<SettingsState>()(
     (set) => ({
       settings: DEFAULT_READING_SETTINGS,
       autoCheck: true,
+      customFonts: [],
       patch: (partial) => set((prev) => ({ settings: { ...prev.settings, ...partial } })),
       setTheme: (theme) => set((prev) => ({ settings: { ...prev.settings, theme } })),
       setFontFamilyKind: (kind) =>
         set((prev) => ({ settings: { ...prev.settings, fontFamily: FONT_STACKS[kind] } })),
+      setFontFamily: (fontFamily) => set((prev) => ({ settings: { ...prev.settings, fontFamily } })),
       setAutoCheck: (autoCheck) => set({ autoCheck }),
+      setCustomFonts: (customFonts) => set({ customFonts: sanitizeCustomFonts(customFonts) }),
       reset: () => set({ settings: DEFAULT_READING_SETTINGS }),
     }),
     {
       name: 'modu:reader-settings',
       version: 3,
-      // 只持久化 settings 与 autoCheck，避免把函数写进 localStorage
-      partialize: (state) => ({ settings: state.settings, autoCheck: state.autoCheck }),
+      // 只持久化 settings 与 autoCheck/customFonts，避免把函数写进 localStorage
+      partialize: (state) => ({
+        settings: state.settings,
+        autoCheck: state.autoCheck,
+        customFonts: state.customFonts,
+      }),
       migrate: (persisted) => migrate(persisted),
       merge: (persisted, current) => {
         const saved = persisted as
-          | { settings?: Partial<ReadingSettings>; autoCheck?: boolean }
+          | {
+              settings?: Partial<ReadingSettings>
+              autoCheck?: boolean
+              customFonts?: unknown
+            }
           | undefined
         return {
           ...current,
           settings: normalizeSettings(saved?.settings),
           autoCheck:
             typeof saved?.autoCheck === 'boolean' ? saved.autoCheck : readLegacyAutoCheck(),
+          customFonts: sanitizeCustomFonts(saved?.customFonts),
         }
       },
     },

@@ -168,8 +168,9 @@ export function ReaderPage({
   suspended = false,
   devSpike = false,
 }: ReaderPageProps) {
-  // 只取 settings：排版调整入口已迁到 App 的标题栏快速面板。
+  // 只取 settings/customFonts：排版调整入口已迁到 App 的标题栏快速面板。
   const { settings } = useReaderSettings()
+  const customFonts = useReaderSettings((state) => state.customFonts)
 
   const [error, setError] = useState<string | null>(null)
   const [relocate, setRelocate] = useState<RelocateState>({
@@ -878,6 +879,7 @@ export function ReaderPage({
             <ReaderView
               book={book}
               settings={settings}
+              customFonts={customFonts}
               annotations={annotations}
               onAnnotate={(draft, mode) => void handleAnnotate(draft, mode)}
               onAnnotationActivate={handleAnnotationActivate}

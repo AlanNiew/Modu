@@ -2,11 +2,15 @@ import { beforeEach, describe, expect, it } from 'vitest'
 
 import { DEFAULT_READING_SETTINGS, FONT_STACKS } from '../renderer/theme'
 import { fontFamilyKind, normalizeSettings, useReaderSettings } from './settings'
+import type { InstalledFont } from '../lib/types'
 
 describe('reader settings store', () => {
   beforeEach(() => {
     localStorage.clear()
-    useReaderSettings.setState({ settings: DEFAULT_READING_SETTINGS })
+    useReaderSettings.setState({
+      settings: DEFAULT_READING_SETTINGS,
+      customFonts: [],
+    })
   })
 
   it('patches only the provided fields', () => {
@@ -54,6 +58,23 @@ describe('reader settings store', () => {
     )
     expect(legacy.pagePadding).toBe(24)
     expect('justify' in legacy).toBe(false)
+  })
+
+  it('normalizeSettings：非法数值被钳回合法区间', () => {
+    const clamped = normalizeSettings({ fontSize: 999, pagePadding: -5 } as never)
+    expect(clamped.fontSize).toBe(32)
+    expect(clamped.pagePadding).toBe(0)
+  })
+
+  it('customFonts：set 动作过滤非法条目（合并路径同规则）', () => {
+    useReaderSettings.getState().setCustomFonts([
+      { file: 'good.ttf', family: 'Good' },
+      { file: '../evil.ttf', family: 'Evil' } as unknown as InstalledFont,
+      { file: '', family: '' } as unknown as InstalledFont,
+    ])
+    expect(useReaderSettings.getState().customFonts).toEqual([
+      { file: 'good.ttf', family: 'Good' },
+    ])
   })
 
   it('persists under a versioned localStorage key', async () => {

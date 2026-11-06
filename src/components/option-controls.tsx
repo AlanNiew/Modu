@@ -60,7 +60,7 @@ export function Segmented<T extends string>({
   onChange,
   columns,
 }: {
-  options: ReadonlyArray<{ id: T; label: string }>
+  options: ReadonlyArray<{ id: T; label: string; title?: string }>
   value: T
   onChange: (id: T) => void
   /** 默认按选项数平分；需要换行时可显式指定列数。 */
@@ -75,6 +75,7 @@ export function Segmented<T extends string>({
         <button
           key={option.id}
           type="button"
+          title={option.title}
           onClick={() => onChange(option.id)}
           className={cn(
             'truncate rounded-md py-1.5 text-[11px] transition',

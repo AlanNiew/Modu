@@ -155,3 +155,11 @@ export interface AnnotationDraft {
   color?: AnnotationColor
   note?: string | null
 }
+
+/** 一个用户导入的自定义字体（文件在数据目录 fonts/ 下，Rust 解析家族名）。 */
+export interface InstalledFont {
+  /** fonts 目录下的纯文件名（含扩展名），用于协议 URL。 */
+  file: string
+  /** 字体 name 表里的家族名（@font-face 注册用）。 */
+  family: string
+}
