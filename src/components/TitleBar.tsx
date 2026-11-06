@@ -36,12 +36,18 @@ interface TitleBarProps {
  * - 窗口缩放由 WindowResizeHandles 负责
  *
  * 布局（书架 / 阅读器 / 设置保持一致）：
- *   品牌图标 → 固定菜单栏 → 可选返回 → 标题+副标题 →（弹性）→ 页面快捷按钮
- *   → 分隔线 → 窗口按键
+ *   ┌ 左：品牌图标 + 固定菜单栏
+ *   ├ 中：标题 + 副标题（绝对居中，不参与左右两组的宽度竞争）
+ *   └ 右：返回 + 页面快捷按钮 → 分隔线 → 窗口按键
  *
- * 菜单放在最左侧（Logo 右边、返回按钮之前）是 Windows 桌面应用的习惯位置：
- * 菜单位置固定、不随标题长短浮动；标题占据其后的弹性区，长书名只会挤压
- * 副标题而不会推动菜单。
+ * 为什么标题要绝对居中而不是夹在中间靠 flex：菜单位置固定、动作按钮数量
+ * 又随页面变化（书架 1 个、阅读页 3 个），用 flex 会让标题被推着左右跑。
+ * 居中后各组互不影响：菜单位置不动，标题永远在窗口正中，动作区从右往左排。
+ *
+ * 标题层是 `pointer-events-none`：既不抢按钮点击，又能让整条标题栏继续作为
+ * `data-tauri-drag-region` 拖动（事件落到父层）。
+ *
+ * 菜单放在最左侧（Logo 右边）是 Windows 桌面应用的习惯位置。
  *
  * 「菜单栏固定」的含义：书架与阅读页之间切换时，菜单栏不变；
  * 沉浸/全屏是显式隐藏整个界面（含标题栏）的模式，不在该保证范围内。
@@ -59,52 +65,65 @@ export function TitleBar({
     <div
       data-tauri-drag-region
       className={cn(
-        'flex h-11 shrink-0 select-none items-center gap-1 border-b border-surface0/60 bg-mantle pl-1.5',
+        'relative flex h-11 shrink-0 select-none items-center gap-1 border-b border-surface0/60 bg-mantle pl-1.5',
         className,
       )}
     >
-      <div
-        data-tauri-drag-region
-        className="flex h-7 w-7 shrink-0 items-center justify-center"
-      >
-        {/* 应用图标同时充当品牌标记：墨滴落进摊开的书里 */}
-        <img
-          src={logoUrl}
-          alt="墨读"
-          draggable={false}
-          className="h-6 w-6 rounded-[7px] shadow-sm shadow-black/30"
-        />
+      {/* 左：品牌 + 菜单（位置固定，不随标题/动作变化） */}
+      <div className="flex min-w-0 shrink-0 items-center gap-1">
+        <div
+          data-tauri-drag-region
+          className="flex h-7 w-7 shrink-0 items-center justify-center"
+        >
+          {/* 应用图标同时充当品牌标记：墨滴落进摊开的书里 */}
+          <img
+            src={logoUrl}
+            alt="墨读"
+            draggable={false}
+            className="h-6 w-6 rounded-[7px] shadow-sm shadow-black/30"
+          />
+        </div>
+        <MenuBar sections={menuSections} />
       </div>
 
-      <MenuBar sections={menuSections} />
-
-      {onBack && (
-        <button
-          type="button"
-          onClick={onBack}
-          title={`返回${backLabel}`}
-          className="ml-1 flex h-7 shrink-0 items-center gap-0.5 rounded-md px-1.5 text-[11px] text-subtext transition hover:bg-surface0/80 hover:text-text"
-        >
-          <ChevronLeft size={15} />
-          {backLabel}
-        </button>
-      )}
-
-      <div data-tauri-drag-region className="ml-1 flex min-w-0 flex-1 items-baseline gap-2 px-1">
+      {/* 中：标题绝对居中，左右两组宽度变化不会推动它。
+          宽度上限同时受窗口占比与「两侧预留」约束，窗口缩到 900px 最小宽时
+          也不会压到菜单或返回/动作按钮 */}
+      <div
+        data-tauri-drag-region
+        className="pointer-events-none absolute left-1/2 flex h-full max-w-[min(42%,calc(100%-40rem))] -translate-x-1/2 items-center gap-2 overflow-hidden"
+      >
         <span
           data-tauri-drag-region
-          className="max-w-[45%] truncate text-[13px] font-medium leading-7 text-text"
+          className="truncate text-[13px] font-medium leading-none text-text"
         >
           {title}
         </span>
         {subtitle && (
-          <span data-tauri-drag-region className="truncate text-[11px] text-overlay0">
+          <span
+            data-tauri-drag-region
+            className="hidden shrink-0 truncate text-[11px] leading-none text-overlay0 sm:inline"
+          >
             {subtitle}
           </span>
         )}
       </div>
 
-      {actions && <div className="ml-1 flex shrink-0 items-center gap-0.5">{actions}</div>}
+      {/* 右：返回 → 页面快捷按钮 → 窗口按键，从右往左排 */}
+      <div className="ml-auto flex min-w-0 shrink-0 items-center gap-0.5">
+        {onBack && (
+          <button
+            type="button"
+            onClick={onBack}
+            title={`返回${backLabel}`}
+            className="flex h-7 max-w-[9rem] shrink-0 items-center gap-0.5 rounded-md px-1.5 text-[11px] text-subtext transition hover:bg-surface0/80 hover:text-text"
+          >
+            <ChevronLeft size={15} className="shrink-0" />
+            <span className="truncate">{backLabel}</span>
+          </button>
+        )}
+        {actions}
+      </div>
 
       <div className="mx-1 h-5 w-px shrink-0 bg-surface0/70" />
       <WindowControls />

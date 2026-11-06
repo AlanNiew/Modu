@@ -2,6 +2,7 @@ import { useVirtualizer } from '@tanstack/react-virtual'
 import { FolderOpen, Library, Search, X } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
+import { ConfirmDialog } from '../../components/ConfirmDialog'
 import { cn } from '../../lib/cn'
 import type { BookSummary, ShelfFilter, ShelfSort } from '../../lib/types'
 import { FILTER_LABELS, SORT_LABELS, useLibrary } from '../../store/library'
@@ -77,6 +78,9 @@ export function ShelfPage({ onOpenBook }: ShelfPageProps) {
   const gridRef = useRef<HTMLDivElement | null>(null)
   const searchRef = useRef<HTMLInputElement | null>(null)
   const [localQuery, setLocalQuery] = useState(query)
+  // 「移出书架」先确认再执行：Tauri 的 window.confirm 是异步 polyfill，
+  // 不能拿来做动作前置判断（会把书先移掉再弹框）。
+  const [pendingRemove, setPendingRemove] = useState<BookSummary | null>(null)
   const { columns, rowHeight } = useGridMetrics(gridRef)
 
   useEffect(() => {
@@ -209,11 +213,7 @@ export function ShelfPage({ onOpenBook }: ShelfPageProps) {
                         <BookCard
                           book={book}
                           onOpen={onOpenBook}
-                          onRemove={(target) => {
-                            if (window.confirm(`把《${target.title}》移出书架？（不会删除文件）`)) {
-                              void remove(target.id)
-                            }
-                          }}
+                          onRemove={setPendingRemove}
                         />
                       </div>
                     ))}
@@ -224,6 +224,21 @@ export function ShelfPage({ onOpenBook }: ShelfPageProps) {
           )}
         </div>
       </div>
+
+      <ConfirmDialog
+        open={pendingRemove !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingRemove(null)
+        }}
+        title={pendingRemove ? `把《${pendingRemove.title}》移出书架？` : '移出书架'}
+        description="只会从书架移除记录，不会删除你的 EPUB 文件；重新导入即可恢复。"
+        confirmLabel="移出书架"
+        danger
+        onConfirm={async () => {
+          if (!pendingRemove) return
+          await remove(pendingRemove.id)
+        }}
+      />
     </div>
   )
 }
