@@ -5,8 +5,10 @@ mod epub;
 mod error;
 mod fonts;
 mod library;
+mod prefs;
 mod protocol;
 mod state;
+mod tray;
 
 use tauri::Manager;
 
@@ -127,10 +129,46 @@ pub fn run() {
         // process 负责安装完成后 relaunch() 重启到新版本。
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        // 开机自启（写 HKCU\...\Run）：插件与托盘菜单、设置页共用同一状态。
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .setup(|app| {
             let state = init_state(app.handle())?;
             app.manage(state);
+            // 托盘必须在 setup 里建：此时窗口已存在，左键切换可见性才有意义。
+            tray::init(app.handle());
             Ok(())
+        })
+        // 关闭主窗口时的行为（托盘 / 退出 / 询问），见 prefs::CloseAction。
+        .on_window_event(|window, event| {
+            if window.label() != "main" {
+                return;
+            }
+            let tauri::WindowEvent::CloseRequested { api, .. } = event else {
+                return;
+            };
+            let app = window.app_handle();
+            let data_dir = app.state::<state::AppState>().data_dir.clone();
+            match prefs::load(&data_dir).close_action {
+                prefs::CloseAction::Tray => {
+                    // 隐藏而不是关闭：保存窗口位置后收进托盘继续跑。
+                    tray::save_window_state(app);
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+                prefs::CloseAction::Quit => {
+                    tray::save_window_state(app);
+                    api.prevent_close();
+                    app.exit(0);
+                }
+                prefs::CloseAction::Ask => {
+                    // 交给前端弹一次性询问框；用户选择后由命令落盘并执行。
+                    api.prevent_close();
+                    let _ = tauri::Emitter::emit(app, tray::EVENT_CLOSE_REQUESTED, ());
+                }
+            }
         })
         .register_uri_scheme_protocol("epub", |app, request| {
             let state = app.app_handle().state::<state::AppState>();
@@ -163,6 +201,12 @@ pub fn run() {
             commands::font_import,
             commands::font_list,
             commands::font_remove,
+            commands::close_policy_get,
+            commands::close_policy_set,
+            commands::hide_to_tray,
+            commands::quit_app,
+            commands::autostart_get,
+            commands::autostart_set,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

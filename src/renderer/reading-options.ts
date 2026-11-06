@@ -16,6 +16,16 @@ export const ALIGN_OPTIONS: ReadonlyArray<{ id: 'justify' | 'left'; label: strin
   { id: 'left', label: '左对齐' },
 ]
 
+/** 关闭主窗口的行为选项（P5，值与 Rust prefs::CloseAction 的 camelCase 一致）。 */
+export const CLOSE_ACTION_OPTIONS: ReadonlyArray<{
+  id: 'ask' | 'tray' | 'quit'
+  label: string
+}> = [
+  { id: 'ask', label: '每次询问' },
+  { id: 'tray', label: '最小化到托盘' },
+  { id: 'quit', label: '直接退出' },
+]
+
 /** 段落首行缩进（em）：快速面板用开关表达，设置页也用开关，值域固定 0/2。 */
 export const INDENT_EM = 2
 

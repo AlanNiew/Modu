@@ -58,4 +58,11 @@ impl From<rusqlite::Error> for AppError {
     }
 }
 
+/// 菜单/托盘等 Tauri API 的错误统一归到 Internal（都是环境层面的失败）。
+impl From<tauri::Error> for AppError {
+    fn from(e: tauri::Error) -> Self {
+        AppError::Internal(e.to_string())
+    }
+}
+
 pub type AppResult<T> = Result<T, AppError>;

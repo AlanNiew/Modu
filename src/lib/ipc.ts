@@ -5,6 +5,7 @@ import type {
   AnnotationDraft,
   BookSummary,
   Bookmark,
+  CloseAction,
   ImportOutcome,
   InstalledFont,
   ListOptions,
@@ -144,3 +145,26 @@ export const listFonts = () => invoke<InstalledFont[]>('font_list')
 
 /** 删除一个自定义字体（纯文件名）。 */
 export const removeFont = (file: string) => invoke<void>('font_remove', { file })
+
+// ---------------------------------------------------------------------------
+// 桌面行为（P5）：关闭动作 / 托盘 / 开机自启
+// ---------------------------------------------------------------------------
+
+/** 读取「关闭主窗口」行为（托盘菜单与设置页共用同一份 Rust 偏好）。 */
+export const closePolicyGet = () => invoke<CloseAction>('close_policy_get')
+
+/** 写入「关闭主窗口」行为，返回落盘后的值。 */
+export const closePolicySet = (action: CloseAction) =>
+  invoke<CloseAction>('close_policy_set', { action })
+
+/** 最小化到系统托盘。 */
+export const hideToTray = () => invoke<void>('hide_to_tray')
+
+/** 退出程序（托盘与关闭询问共用）。 */
+export const quitApp = () => invoke<void>('quit_app')
+
+/** 开机自启当前是否开启（Windows 写 HKCU\...\Run）。 */
+export const autostartGet = () => invoke<boolean>('autostart_get')
+
+/** 开关开机自启，返回实际生效后的状态。 */
+export const autostartSet = (enabled: boolean) => invoke<boolean>('autostart_set', { enabled })

@@ -1,4 +1,5 @@
 import { getVersion } from '@tauri-apps/api/app'
+import { listen } from '@tauri-apps/api/event'
 import { open } from '@tauri-apps/plugin-dialog'
 import { Check, Info, Loader2, RotateCcw, Trash2, Upload } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
@@ -6,12 +7,21 @@ import { useCallback, useEffect, useState } from 'react'
 import { Segmented, SliderRow, SwitchRow } from '../../components/option-controls'
 import {
   ALIGN_OPTIONS,
+  CLOSE_ACTION_OPTIONS,
   FLOW_OPTIONS,
   FONT_PRESETS,
   indentEnabledToEm,
   indentEmToEnabled,
 } from '../../renderer/reading-options'
-import { importFont, listFonts, removeFont } from '../../lib/ipc'
+import {
+  autostartGet,
+  autostartSet,
+  closePolicyGet,
+  closePolicySet,
+  importFont,
+  listFonts,
+  removeFont,
+} from '../../lib/ipc'
 import { cn } from '../../lib/cn'
 import {
   THEME_OPTIONS,
@@ -19,7 +29,7 @@ import {
   themeSwatch,
 } from '../../renderer/theme'
 import { fontStackLabel, useReaderSettings } from '../../store/settings'
-import type { InstalledFont } from '../../lib/types'
+import type { CloseAction, InstalledFont } from '../../lib/types'
 
 export type SettingsTabId = 'appearance' | 'typography' | 'conversion' | 'behavior' | 'about'
 
@@ -282,7 +292,7 @@ function TypographySection() {
   )
 }
 
-/** 行为：更新检查（迁移自更新面板）+ P5 占位。 */
+/** 行为：更新检查 + 关闭动作 + 开机自启（P5）。 */
 function BehaviorSection() {
   // autoCheck 自 P2 起并入 settings store：这里是唯一的读写入口，
   // 与 App 的启动静默检查共享一份状态，不存在镜像漂移。
@@ -301,15 +311,141 @@ function BehaviorSection() {
           onChange={setAutoCheck}
         />
       </Group>
-      <PlaceholderSection
-        title="窗口与系统"
-        items={[
-          '关闭窗口行为（询问一次并记忆 / 直接退出 / 最小化到托盘）',
-          '开机自启 · 系统托盘',
-        ]}
-        note="托盘与关闭询问依赖 Rust 侧生命周期，将在后续阶段开放。"
-      />
+      <CloseBehaviorGroup />
+      <AutostartGroup />
     </>
+  )
+}
+
+/** 关闭主窗口时的行为（持久化在 Rust 侧，托盘菜单与设置页共用）。 */
+function CloseBehaviorGroup() {
+  const [action, setAction] = useState<CloseAction | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let disposed = false
+    void closePolicyGet()
+      .then((value) => {
+        if (!disposed) setAction(value)
+      })
+      .catch((err) => {
+        if (!disposed) setError(String(err))
+      })
+    return () => {
+      disposed = true
+    }
+  }, [])
+
+  const change = useCallback(async (next: CloseAction) => {
+    setError(null)
+    try {
+      const saved = await closePolicySet(next)
+      setAction(saved)
+    } catch (err) {
+      setError(String(err))
+    }
+  }, [])
+
+  return (
+    <Group
+      title="关闭主窗口时"
+      note="选择「每次询问」时，第一次关闭会弹窗让你决定，并可勾选「不再询问」；托盘菜单里也能随时改。"
+    >
+      <Segmented
+        options={CLOSE_ACTION_OPTIONS.map(({ id, label }) => ({ id, label }))}
+        value={action ?? 'ask'}
+        onChange={(id) => void change(id)}
+        columns={3}
+      />
+      {action === null && <p className="text-[11px] text-overlay0">正在读取当前设置…</p>}
+      {action === 'tray' && (
+        <p className="text-[11px] text-overlay0">
+          关闭后应用继续在托盘运行；右键托盘图标可「退出墨读」。
+        </p>
+      )}
+      {error && <p className="text-[11px] text-red">{error}</p>}
+    </Group>
+  )
+}
+
+/** 开机自启：走 tauri-plugin-autostart（Windows 写 HKCU\...\Run）。 */
+function AutostartGroup() {
+  const [enabled, setEnabled] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  // 便携版/无稳定 exe 路径的环境读不到有效状态：开关置灰并提示（方案 §8 边界）。
+  const [unsupported, setUnsupported] = useState(false)
+
+  useEffect(() => {
+    let disposed = false
+    void autostartGet()
+      .then((value) => {
+        if (!disposed) setEnabled(value)
+      })
+      .catch(() => {
+        if (!disposed) setUnsupported(true)
+      })
+    return () => {
+      disposed = true
+    }
+  }, [])
+
+  // 托盘菜单也能切自启：收到通知后重新读一次，避免设置页显示旧状态。
+  useEffect(() => {
+    let disposed = false
+    let unlisten: (() => void) | undefined
+    void (async () => {
+      const stop = await listen('modu://tray-action', (event) => {
+        if (event.payload !== 'autostart-changed' || disposed) return
+        void autostartGet()
+          .then((value) => {
+            if (!disposed) setEnabled(value)
+          })
+          .catch(() => undefined)
+      })
+      if (disposed) stop()
+      else unlisten = stop
+    })()
+    return () => {
+      disposed = true
+      unlisten?.()
+    }
+  }, [])
+
+  const toggle = useCallback(async (next: boolean) => {
+    setBusy(true)
+    setError(null)
+    try {
+      const actual = await autostartSet(next)
+      setEnabled(actual)
+      if (actual !== next) setError('系统未接受该设置，请稍后重试。')
+    } catch (err) {
+      setError(`操作失败：${String(err)}`)
+    } finally {
+      setBusy(false)
+    }
+  }, [])
+
+  return (
+    <Group
+      title="开机自动启动"
+      note="仅安装版支持（写入当前用户的启动项）；便携版如果提示失败，请改用手动创建快捷方式。"
+    >
+      <SwitchRow
+        label="开机时自动启动墨读"
+        description={
+          unsupported
+            ? '当前环境不支持（仅安装版可写启动项）'
+            : busy
+              ? '正在应用…'
+              : '登录 Windows 后自动在后台启动，配合托盘可做到随开随读'
+        }
+        checked={enabled}
+        onChange={(next) => void toggle(next)}
+        disabled={unsupported || busy}
+      />
+      {error && <p className="text-[11px] text-red">{error}</p>}
+    </Group>
   )
 }
 
@@ -505,34 +641,6 @@ function ThemeButton({
         {label}
       </span>
     </button>
-  )
-}
-
-/** 尚未开放分组的占位说明（后续阶段逐个替换）。 */
-function PlaceholderSection({
-  title,
-  items,
-  note,
-}: {
-  title: string
-  items: string[]
-  note: string
-}) {
-  return (
-    <section className="space-y-3">
-      <SectionTitle>{title}</SectionTitle>
-      <div className="rounded-lg border border-dashed border-surface1 bg-mantle/50 p-4">
-        <ul className="space-y-1.5 text-[12px] text-subtext">
-          {items.map((item) => (
-            <li key={item} className="flex items-start gap-2">
-              <span className="mt-[7px] h-1 w-1 shrink-0 rounded-full bg-surface2" />
-              {item}
-            </li>
-          ))}
-        </ul>
-        <p className="mt-3 text-[11px] leading-relaxed text-overlay0">{note}</p>
-      </div>
-    </section>
   )
 }
 

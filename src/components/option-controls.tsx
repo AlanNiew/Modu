@@ -96,14 +96,22 @@ export function SwitchRow({
   description,
   checked,
   onChange,
+  disabled = false,
 }: {
   label: ReactNode
   description?: ReactNode
   checked: boolean
   onChange: (checked: boolean) => void
+  /** 置灰（如便携版不支持开机自启）。 */
+  disabled?: boolean
 }) {
   return (
-    <label className="flex items-center justify-between text-[11px] text-subtext">
+    <label
+      className={cn(
+        'flex items-center justify-between text-[11px] text-subtext',
+        disabled && 'cursor-not-allowed opacity-50',
+      )}
+    >
       <span className="flex flex-col">
         <span>{label}</span>
         {description && <span className="text-[10px] text-overlay0/70">{description}</span>}
@@ -111,6 +119,7 @@ export function SwitchRow({
       <Switch.Root
         checked={checked}
         onCheckedChange={onChange}
+        disabled={disabled}
         className="relative h-4 w-8 shrink-0 rounded-full bg-surface1 transition data-[state=checked]:bg-blue"
       >
         <Switch.Thumb className="block h-3 w-3 translate-x-0.5 rounded-full bg-text transition-transform data-[state=checked]:translate-x-4" />

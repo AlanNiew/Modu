@@ -7,6 +7,8 @@ use serde::Serialize;
 use tauri::State;
 
 use crate::fonts;
+use crate::prefs;
+use crate::tray;
 use crate::library::{
     self, Annotation, AnnotationColor, AnnotationInput, Bookmark, BookSummary, ImportOutcome,
     ListOptions, ProgressRecord,
@@ -355,4 +357,75 @@ pub fn font_list(state: State<'_, AppState>) -> AppResult<Vec<fonts::InstalledFo
 #[tauri::command]
 pub fn font_remove(state: State<'_, AppState>, file: String) -> AppResult<()> {
     fonts::remove(&state.data_dir, &file)
+}
+
+// ---------------------------------------------------------------------------
+// 桌面行为（P5）：关闭动作 / 托盘 / 开机自启
+// ---------------------------------------------------------------------------
+
+/// 读取「关闭主窗口」行为（托盘菜单与设置页共用）。
+#[tauri::command]
+pub fn close_policy_get(state: State<'_, AppState>) -> AppResult<prefs::CloseAction> {
+    Ok(prefs::load(&state.data_dir).close_action)
+}
+
+/// 写入「关闭主窗口」行为并返回落盘后的值。
+#[tauri::command]
+pub fn close_policy_set(
+    state: State<'_, AppState>,
+    action: prefs::CloseAction,
+) -> AppResult<prefs::CloseAction> {
+    let mut preferences = prefs::load(&state.data_dir);
+    preferences.close_action = action;
+    prefs::save(&state.data_dir, &preferences)?;
+    Ok(action)
+}
+
+/// 最小化到托盘（关闭询问里选「最小化」、或前端显式调用）。
+#[tauri::command]
+pub fn hide_to_tray(app: tauri::AppHandle) -> AppResult<()> {
+    use tauri::Manager;
+
+    tray::save_window_state(&app);
+    if let Some(window) = app.get_webview_window("main") {
+        window
+            .hide()
+            .map_err(|e| AppError::Internal(format!("隐藏窗口失败: {e}")))?;
+    }
+    Ok(())
+}
+
+/// 退出程序（关闭询问里选「退出」）。
+#[tauri::command]
+pub fn quit_app(app: tauri::AppHandle) {
+    tray::save_window_state(&app);
+    app.exit(0);
+}
+
+/// 开机自启当前是否开启。
+#[tauri::command]
+pub fn autostart_get(app: tauri::AppHandle) -> AppResult<bool> {
+    use tauri_plugin_autostart::ManagerExt;
+    app.autolaunch()
+        .is_enabled()
+        .map_err(|e| AppError::Internal(format!("读取开机自启状态失败: {e}")))
+}
+
+/// 开关开机自启，返回实际生效后的状态（写入失败会回滚为原值）。
+#[tauri::command]
+pub fn autostart_set(app: tauri::AppHandle, enabled: bool) -> AppResult<bool> {
+    use tauri_plugin_autostart::ManagerExt;
+    let manager = app.autolaunch();
+    if enabled {
+        manager
+            .enable()
+            .map_err(|e| AppError::Internal(format!("开启开机自启失败: {e}")))?;
+    } else {
+        manager
+            .disable()
+            .map_err(|e| AppError::Internal(format!("关闭开机自启失败: {e}")))?;
+    }
+    manager
+        .is_enabled()
+        .map_err(|e| AppError::Internal(format!("读取开机自启状态失败: {e}")))
 }

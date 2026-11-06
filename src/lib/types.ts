@@ -163,3 +163,6 @@ export interface InstalledFont {
   /** 字体 name 表里的家族名（@font-face 注册用）。 */
   family: string
 }
+
+/** 关闭主窗口时的行为（持久化在 Rust 侧 preferences.json，P5）。 */
+export type CloseAction = 'ask' | 'tray' | 'quit'

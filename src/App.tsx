@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { listen } from '@tauri-apps/api/event'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { Loader2, PanelLeft, Settings2 } from 'lucide-react'
 
+import { CloseConfirmDialog } from './components/CloseConfirmDialog'
 import { HelpDialog } from './components/HelpDialog'
 import { TitleBar, TitleBarButton } from './components/TitleBar'
 import { UpdateDialog } from './components/UpdateDialog'
@@ -83,6 +85,8 @@ export default function App() {
   // 软件更新：启动静默检查到的结果先存着，打开面板时直接展示，避免重复请求。
   const [updateOpen, setUpdateOpen] = useState(false)
   const [availableUpdate, setAvailableUpdate] = useState<AvailableUpdate | null>(null)
+  // 关闭询问（P5）：Rust 拦截 CloseRequested 后发事件，这里弹一次性对话框。
+  const [closeConfirmOpen, setCloseConfirmOpen] = useState(false)
 
   const importPaths = useLibrary((state) => state.importPaths)
   const chromeTitle = useChromeStore((state) => state.title)
@@ -142,6 +146,36 @@ export default function App() {
     setView(settingsReturnRef.current)
   }, [])
 
+  // 桌面集成（P5）：Rust 侧拦截关闭请求 / 托盘菜单动作 → 驱动前端弹窗与路由。
+  useEffect(() => {
+    const unlisteners: Array<() => void> = []
+    let disposed = false
+    void (async () => {
+      const close = await listen('modu://close-requested', () => {
+        setCloseConfirmOpen(true)
+      })
+      const trayAction = await listen<string>('modu://tray-action', (event) => {
+        const action = event.payload
+        if (action === 'settings') {
+          openSettings(null)
+        } else if (action === 'check-update') {
+          setUpdateOpen(true)
+        }
+        // 'autostart-changed'：状态由 Rust/设置页各自刷新，前端无需额外动作。
+      })
+      if (disposed) {
+        close()
+        trayAction()
+        return
+      }
+      unlisteners.push(close, trayAction)
+    })()
+    return () => {
+      disposed = true
+      for (const unlisten of unlisteners) unlisten()
+    }
+  }, [openSettings])
+
   const toggleFullscreen = useCallback(async () => {
     try {
       const appWindow = getCurrentWindow()
@@ -193,6 +227,7 @@ export default function App() {
   // 设置页 Esc：先退全屏，再退回上一视图（弹层打开时交给弹层自己）。
   const fullscreenRef = useRef(fullscreen)
   fullscreenRef.current = fullscreen
+
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return
@@ -493,6 +528,8 @@ export default function App() {
       )}
 
       <HelpDialog open={helpOpen} onOpenChange={setHelpOpen} />
+
+      <CloseConfirmDialog open={closeConfirmOpen} onOpenChange={setCloseConfirmOpen} />
 
       <UpdateDialog
         open={updateOpen}
