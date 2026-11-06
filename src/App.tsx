@@ -42,6 +42,16 @@ const FONT_SIZE_MIN = 14
 const FONT_SIZE_MAX = 32
 
 /**
+ * 打开/重开书时当前「繁转简」开关的即时值。
+ *
+ * 不在组件里用 hook 包裹：Rust 侧按「打开时刻」定格转换（正文/目录/搜索
+ * 都带上该标志），所以这里只需要调用时的最新值，不需要触发重渲染。
+ */
+function currentConvertTraditional(): boolean {
+  return useReaderSettings.getState().settings.simplifyTraditional
+}
+
+/**
  * 应用外壳（P1 起改为「标题栏由本组件统一渲染一次」的模型）：
  *
  * - 标题栏全局固定：菜单栏（文件/阅读/视图/帮助）不随书架↔阅读切换；
@@ -208,7 +218,7 @@ export default function App() {
     setOpenError(null)
     setOpening(true)
     try {
-      const info = await openFromLibrary(book.id)
+      const info = await openFromLibrary(book.id, currentConvertTraditional())
       setReader(info)
       setReaderEpoch((epoch) => epoch + 1)
       setView('reader')
@@ -238,7 +248,7 @@ export default function App() {
     }
     try {
       await closeBook(current.id)
-      const info = await openFromLibrary(current.libraryId)
+      const info = await openFromLibrary(current.libraryId, currentConvertTraditional())
       setReader(info)
       setReaderEpoch((epoch) => epoch + 1)
     } catch (err) {
@@ -413,7 +423,9 @@ export default function App() {
         const match = books.find((item) => item.path.endsWith('.epub')) ?? books[0]
         // 标记本次是 spike 打开：ReaderPage 会据此跑一遍 dev 自检。
         setSpikeAuto(true)
-        const info = match ? await openFromLibrary(match.id) : await openBook(spike)
+        const info = match
+          ? await openFromLibrary(match.id, currentConvertTraditional())
+          : await openBook(spike, currentConvertTraditional())
         if (!cancelled) {
           setReader(info)
           setReaderEpoch((epoch) => epoch + 1)
@@ -427,6 +439,7 @@ export default function App() {
     return () => {
       cancelled = true
     }
+    // 仅 dev spike 自检路径：一次性运行（繁简开关从 store 现读）
   }, [])
 
   return (

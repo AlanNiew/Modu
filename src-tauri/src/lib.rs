@@ -1,4 +1,5 @@
 mod commands;
+mod convert;
 mod db;
 mod epub;
 mod error;

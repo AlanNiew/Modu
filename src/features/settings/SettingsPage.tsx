@@ -77,13 +77,7 @@ export function SettingsPage({ initialTab = null, onCheckUpdate }: SettingsPageP
         <div className="mx-auto w-full max-w-2xl space-y-8 px-8 py-8">
           {tab === 'appearance' && <AppearanceSection />}
           {tab === 'typography' && <TypographySection />}
-          {tab === 'conversion' && (
-            <PlaceholderSection
-              title="转换"
-              items={['繁体自动转简体（默认关闭，进入渲染前统一转换，与全书搜索口径一致）']}
-              note="该功能依赖 Rust 侧繁简词典，将在后续阶段开放。"
-            />
-          )}
+          {tab === 'conversion' && <ConversionSection />}
           {tab === 'behavior' && <BehaviorSection />}
           {tab === 'about' && <AboutSection onCheckUpdate={onCheckUpdate} />}
         </div>
@@ -316,6 +310,29 @@ function BehaviorSection() {
         note="托盘与关闭询问依赖 Rust 侧生命周期，将在后续阶段开放。"
       />
     </>
+  )
+}
+
+/** 转换（P4）：繁体自动转简体（Rust 侧统一转换，搜索同口径）。 */
+function ConversionSection() {
+  const simplifyTraditional = useReaderSettings((state) => state.settings.simplifyTraditional)
+  const patch = useReaderSettings((state) => state.patch)
+
+  return (
+    <Group
+      title="繁体转简体"
+      note="开启后，繁体中文页面在渲染前统一转为简体中文，全书搜索也同样按简体口径匹配（所见=所搜）。书库文件保持原样，关闭开关立即恢复原文。"
+    >
+      <SwitchRow
+        label="繁体自动转简体"
+        description="适用于全书是繁体（港台出版）的电子书"
+        checked={simplifyTraditional}
+        onChange={(checked) => patch({ simplifyTraditional: checked })}
+      />
+      <p className="text-[11px] leading-relaxed text-overlay0">
+        对已打开的书，切换开关后需要通过顶部菜单「阅读 → 重新加载本书」重新加载才会整本生效（当前章翻页后会跟随）。词典来自 OpenCC，短语优先。
+      </p>
+    </Group>
   )
 }
 
@@ -560,6 +577,43 @@ function AboutSection({ onCheckUpdate }: { onCheckUpdate: () => void }) {
       >
         检查软件更新…
       </button>
+      <OpenSourceCredits />
     </section>
+  )
+}
+
+/** 第三方开源组件与许可证登记（Apache-2.0 / MIT 等再分发合规）。 */
+const CREDITS: ReadonlyArray<{ name: string; license: string; note: string }> = [
+  { name: 'foliate-js', license: 'MIT', note: 'EPUB 渲染内核（vendored）' },
+  { name: 'OpenCC', license: 'Apache-2.0', note: '繁简转换词典（TSCharacters / TSPhrases）' },
+  { name: 'Tauri', license: 'MIT / Apache-2.0', note: '桌面应用框架' },
+  { name: 'React', license: 'MIT', note: '界面框架' },
+  { name: 'Radix UI', license: 'MIT', note: '菜单/对话框原语' },
+  { name: 'Zustand', license: 'MIT', note: '状态管理' },
+  { name: 'Tailwind CSS', license: 'MIT', note: '样式工具' },
+  { name: 'lucide-react', license: 'ISC', note: '图标' },
+]
+
+function OpenSourceCredits() {
+  return (
+    <Group
+      title="开源许可"
+      note="感谢这些开源项目；完整许可证文本随程序分发（Apache-2.0 全文见发布包 LICENSE-OpenCC.txt）。"
+    >
+      <ul className="space-y-1">
+        {CREDITS.map((credit) => (
+          <li
+            key={credit.name}
+            className="flex items-baseline gap-2 text-[11px] text-subtext"
+          >
+            <span className="font-medium text-text">{credit.name}</span>
+            <span className="shrink-0 rounded bg-surface0/60 px-1.5 py-0.5 text-[10px] text-overlay0">
+              {credit.license}
+            </span>
+            <span className="text-overlay0">{credit.note}</span>
+          </li>
+        ))}
+      </ul>
+    </Group>
   )
 }

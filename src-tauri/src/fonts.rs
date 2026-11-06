@@ -219,10 +219,12 @@ fn sanitize_family(raw: String) -> Option<String> {
 
 /// 解码 UTF-16BE（Windows 字体 name 表的文字编码）。
 fn decode_utf16be(bytes: &[u8]) -> Option<String> {
-    let units: Vec<u16> = bytes
-        .chunks_exact(2)
-        .map(|pair| u16::from_be_bytes([pair[0], pair[1]]))
-        .collect();
+    let units = bytes
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| u16::from_be_bytes(*pair))
+        .collect::<Vec<u16>>();
     let text = String::from_utf16(&units).ok()?;
     sanitize_family(text)
 }
@@ -252,7 +254,8 @@ pub fn parse_font_family(bytes: &[u8]) -> Option<String> {
             break;
         }
         let platform = be_u16(name_table, record)?;
-        let encoding = be_u16(name_table, record.checked_add(2)?)?;
+        // encoding 目前只区分「平台 3 → UTF-16BE」；平台 3 内部不再细分。
+        let _encoding = be_u16(name_table, record.checked_add(2)?)?;
         let name_id = be_u16(name_table, record.checked_add(6)?)?;
         let length = be_u16(name_table, record.checked_add(8)?)? as usize;
         let offset = be_u16(name_table, record.checked_add(10)?)? as usize + string_offset;

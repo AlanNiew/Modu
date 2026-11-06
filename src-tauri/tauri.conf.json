@@ -54,6 +54,10 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "resources": {
+      "dictionary/LICENSE-OpenCC.txt": "LICENSE-OpenCC.txt",
+      "dictionary/NOTICE.md": "dictionary-NOTICE.md"
+    },
     "windows": {
       "nsis": {
         "installMode": "currentUser",

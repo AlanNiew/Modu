@@ -15,16 +15,16 @@ import type {
 } from './types'
 
 /** 打开 EPUB，返回书元数据 + spine + 目录；Rust 侧保留 zip 句柄。 */
-export const openBook = (path: string) =>
-  invoke<OpenedBookInfo>('book_open', { path })
+export const openBook = (path: string, convertTraditional = false) =>
+  invoke<OpenedBookInfo>('book_open', { path, convertTraditional })
 
 /** 关闭书籍，释放句柄。 */
 export const closeBook = (bookId: string) =>
   invoke<void>('book_close', { bookId })
 
-/** 读取某个 spine 章节的原始 XHTML 文本。 */
-export const getSectionHtml = (bookId: string, index: number) =>
-  invoke<SectionHtml>('book_section_html', { bookId, index })
+/** 读取某个 spine 章节的原始 XHTML 文本；convertTraditional = 正文繁转简。 */
+export const getSectionHtml = (bookId: string, index: number, convertTraditional = false) =>
+  invoke<SectionHtml>('book_section_html', { bookId, index, convertTraditional })
 
 /** 读取任意 zip 内文本（调试用）。 */
 export const readBookText = (bookId: string, path: string) =>
@@ -51,9 +51,9 @@ export const importBooks = (paths: string[]) =>
 export const listLibrary = (options: ListOptions = {}) =>
   invoke<BookSummary[]>('library_list', { options })
 
-/** 从书架打开：按库内路径解析，并记录最近阅读时间。 */
-export const openFromLibrary = (bookId: number) =>
-  invoke<OpenedBookInfo>('library_open', { bookId })
+/** 从书架打开：按库内路径解析，并记录最近阅读时间；convertTraditional 决定正文/目录是否繁转简。 */
+export const openFromLibrary = (bookId: number, convertTraditional = false) =>
+  invoke<OpenedBookInfo>('library_open', { bookId, convertTraditional })
 
 /** 仅移出书架，不删除原文件。 */
 export const removeFromLibrary = (bookId: number) =>
@@ -94,7 +94,8 @@ export const searchBook = (
   libraryId: number,
   query: string,
   limit = 80,
-) => invoke<SearchHit[]>('book_search', { bookId, libraryId, query, limit })
+  convertTraditional = false,
+) => invoke<SearchHit[]>('book_search', { bookId, libraryId, query, limit, convertTraditional })
 
 export const setBookmarkNote = (bookmarkId: number, note: string | null) =>
   invoke<void>('bookmark_note_set', { bookmarkId, note })

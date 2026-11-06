@@ -51,6 +51,8 @@ export interface ReadingSettings {
   letterSpacing: number
   /** 是否保留出版方（书内）样式；false = 净版，只按本应用的排版渲染 */
   respectPublisherStyles: boolean
+  /** 繁体正文转简体（P4）：转换在 Rust 侧注入前统一做，与全文搜索同口径 */
+  simplifyTraditional: boolean
 }
 
 export interface ReadingTheme {
@@ -248,6 +250,7 @@ export const DEFAULT_READING_SETTINGS: ReadingSettings = {
   paragraphSpacing: 0.72,
   letterSpacing: 0,
   respectPublisherStyles: true,
+  simplifyTraditional: false,
   flow: 'paginated',
 }
 

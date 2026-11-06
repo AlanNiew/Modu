@@ -39,7 +39,7 @@ export interface FoliateBook {
   dispose(): void
 }
 
-export function createFoliateBook(info: OpenedBookInfo): FoliateBook {
+export function createFoliateBook(info: OpenedBookInfo, convertTraditional = false): FoliateBook {
   const pkg: BookPackage = info.package
   const blobUrls = new Map<number, string>()
   const byPath = new Map<string, number>()
@@ -61,7 +61,8 @@ export function createFoliateBook(info: OpenedBookInfo): FoliateBook {
     size: item.size,
     linear: item.linear ? 'yes' : 'no',
     async load() {
-      const { html, path } = await getSectionHtml(info.id, item.index)
+      // 繁简转换在 Rust 侧统一做（与全书搜索同一词典/同一函数，所见=所搜）。
+      const { html, path } = await getSectionHtml(info.id, item.index, convertTraditional)
       const rewritten = rewriteSectionHtml(html, path, info.id)
       const url = URL.createObjectURL(
         new Blob([rewritten], { type: 'text/html;charset=utf-8' }),

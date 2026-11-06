@@ -36,16 +36,33 @@ pub struct SectionHtml {
 
 /// 打开一本 EPUB：解包、读 OPF、spine、目录、封面，并把句柄留在进程内。
 #[tauri::command]
-pub fn book_open(state: State<'_, AppState>, path: String) -> AppResult<OpenedBookInfo> {
-    open_into_state(&state, &path, None)
+pub fn book_open(
+    state: State<'_, AppState>,
+    path: String,
+    convert_traditional: bool,
+) -> AppResult<OpenedBookInfo> {
+    open_into_state(&state, &path, None, convert_traditional)
 }
 
-fn open_into_state(state: &AppState, path: &str, library_id: Option<i64>) -> AppResult<OpenedBookInfo> {
+fn open_into_state(
+    state: &AppState,
+    path: &str,
+    library_id: Option<i64>,
+    convert_traditional: bool,
+) -> AppResult<OpenedBookInfo> {
     let book = epub::open(path)?;
+    let mut package = (*book.package).clone();
+    // 目录标签也走同一 t2s：侧栏/搜索面板里显示的章节名与正文口径一致。
+    // 书名（title）不转：书架封面卡片保留该书原始书名是行业惯例。
+    if convert_traditional {
+        for item in &mut package.toc {
+            item.label = crate::convert::t2s(&item.label);
+        }
+    }
     let info = OpenedBookInfo {
         id: book.id.clone(),
         path: book.path.clone(),
-        package: (*book.package).clone(),
+        package,
         library_id,
     };
     state.books.write().insert(book.id.clone(), Arc::new(book));
@@ -58,12 +75,16 @@ pub fn book_close(state: State<'_, AppState>, book_id: String) {
     state.books.write().remove(&book_id);
 }
 
-/// 读取某个 spine 章节的原始 XHTML 文本。
+/// 读取某个 spine 章节的原始 XHTML 文本；convert_traditional 时做繁→简。
+///
+/// 转换发生在「注入到渲染层之前」，ASCII/HTML 标签原样穿过（见 convert.rs），
+/// 因此与全书搜索（同一函数）保持「所见=所搜」。
 #[tauri::command]
 pub fn book_section_html(
     state: State<'_, AppState>,
     book_id: String,
     index: usize,
+    convert_traditional: bool,
 ) -> AppResult<SectionHtml> {
     let book = state
         .get_book(&book_id)
@@ -73,7 +94,10 @@ pub fn book_section_html(
         .spine
         .get(index)
         .ok_or_else(|| AppError::NotFound(format!("章节不存在: {index}")))?;
-    let html = book.read_text(&item.path)?;
+    let mut html = book.read_text(&item.path)?;
+    if convert_traditional {
+        html = crate::convert::t2s(&html);
+    }
     Ok(SectionHtml { html, path: item.path.clone() })
 }
 
@@ -135,9 +159,13 @@ pub fn library_remove(state: State<'_, AppState>, book_id: i64) -> AppResult<()>
 
 /// 从书架打开一本书：按库内路径解析，并记录最近阅读时间。
 #[tauri::command]
-pub fn library_open(state: State<'_, AppState>, book_id: i64) -> AppResult<OpenedBookInfo> {
+pub fn library_open(
+    state: State<'_, AppState>,
+    book_id: i64,
+    convert_traditional: bool,
+) -> AppResult<OpenedBookInfo> {
     let summary = library::get(&state.db, book_id)?;
-    let info = open_into_state(&state, &summary.path, Some(book_id))?;
+    let info = open_into_state(&state, &summary.path, Some(book_id), convert_traditional)?;
     if let Some(book) = state.get_book(&info.id) {
         // 老数据的章节标题是空的，打开时顺手按目录补一次
         let _ = library::backfill_chapter_titles(&state.db, book_id, &book);
@@ -208,6 +236,7 @@ pub fn book_search(
     library_id: i64,
     query: String,
     limit: Option<usize>,
+    convert_traditional: bool,
 ) -> AppResult<Vec<library::SearchHit>> {
     let book = state
         .get_book(&book_id)
@@ -216,7 +245,7 @@ pub fn book_search(
         library::index_book(&state.db, library_id, &book)?;
     }
     let limit = limit.unwrap_or(80).clamp(1, 300);
-    library::search(&state.db, library_id, &query, limit)
+    library::search(&state.db, library_id, &query, limit, convert_traditional)
 }
 
 /// 更新书签备注（传空字符串即清空）。

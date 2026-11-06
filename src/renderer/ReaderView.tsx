@@ -48,6 +48,8 @@ interface ReaderViewProps {
   settings: ReadingSettings
   /** 用户导入的自定义字体：@font-face 注册进章节文档（P3）。 */
   customFonts?: InstalledFont[]
+  /** 繁体正文转简体（P4）：Rust 侧统一转换，与全书搜索同口径。 */
+  convertTraditional?: boolean
   /** 本书全部批注；按当前章节过滤后画在正文上 */
   annotations?: Annotation[]
   onReady?: (api: ReaderApi) => void
@@ -65,6 +67,7 @@ export function ReaderView({
   book,
   settings,
   customFonts,
+  convertTraditional = false,
   annotations,
   onReady,
   onRelocate,
@@ -557,7 +560,8 @@ export function ReaderView({
 
     ;(async () => {
       try {
-        foliateBook = createFoliateBook(book)
+        // 繁简转换在 open 前定格：切换开关会整本视图重新初始化（-progress 恢复）。
+        foliateBook = createFoliateBook(book, convertTraditional)
         await view.open(foliateBook)
         if (cancelled) return
 
@@ -653,7 +657,10 @@ export function ReaderView({
       view.remove()
       viewRef.current = null
     }
-  }, [book, applySettings])
+  }, [book, convertTraditional, applySettings])
+  // 注意：convertTraditional 变化会整本重建视图（章节 blob 需要重新下发）。
+  // 实际只有设置页能改它，改完由 App 走「重新加载本书」重挂载并恢复进度；
+  // 若将来在阅读界面内直接切换，需要额外补一次 goToLocator 复位。
 
   // 阅读设置变化：重新注入 CSS 并重排。
   // 拖动滑杆会连续触发 settings，重排本身很贵（要重新分页），

@@ -171,6 +171,7 @@ export function ReaderPage({
   // 只取 settings/customFonts：排版调整入口已迁到 App 的标题栏快速面板。
   const { settings } = useReaderSettings()
   const customFonts = useReaderSettings((state) => state.customFonts)
+  const simplifyTraditional = useReaderSettings((state) => state.settings.simplifyTraditional)
 
   const [error, setError] = useState<string | null>(null)
   const [relocate, setRelocate] = useState<RelocateState>({
@@ -444,7 +445,7 @@ export function ReaderPage({
     const timer = window.setTimeout(() => {
       void (async () => {
         try {
-          const hits = await searchBook(book.id, libraryId, query, 80)
+          const hits = await searchBook(book.id, libraryId, query, 80, simplifyTraditional)
           setSearchResults(hits)
         } catch (err) {
           console.error('[reader] 搜索失败', err)
@@ -455,7 +456,7 @@ export function ReaderPage({
       })()
     }, 280)
     return () => window.clearTimeout(timer)
-  }, [searchQuery, book.id, libraryId, showToast])
+  }, [searchQuery, book.id, libraryId, simplifyTraditional, showToast])
 
   const handleJumpSearch = useCallback(async (hit: SearchHit) => {
     const match = hit.snippet.split('\u0001')[1]?.split('\u0002')[0] ?? ''
@@ -880,6 +881,7 @@ export function ReaderPage({
               book={book}
               settings={settings}
               customFonts={customFonts}
+              convertTraditional={simplifyTraditional}
               annotations={annotations}
               onAnnotate={(draft, mode) => void handleAnnotate(draft, mode)}
               onAnnotationActivate={handleAnnotationActivate}

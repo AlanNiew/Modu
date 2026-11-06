@@ -4,6 +4,7 @@
 //! 前端只传路径，不参与解析。
 
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 
@@ -683,7 +684,7 @@ mod tests {
 
         // 全文索引在导入时写好，长词走 FTS5、短词走逐章扫描，两者都要能命中。
         assert_eq!(index_status(&db, first.id).unwrap(), 4);
-        let long_hits = search(&db, first.id, "纸上的灯", 10).unwrap();
+        let long_hits = search(&db, first.id, "纸上的灯", 10, false).unwrap();
         assert!(!long_hits.is_empty(), ">=3 字应命中章节");
         assert!(long_hits[0].snippet.contains(SNIPPET_MARK_START));
         assert!(long_hits.iter().all(|hit| hit.index < 4));
@@ -692,7 +693,7 @@ mod tests {
             long_hits.iter().any(|hit| hit.chapter_title.is_some()),
             "章节标题应从目录回填"
         );
-        let short_hits = search(&db, first.id, "灯", 10).unwrap();
+        let short_hits = search(&db, first.id, "灯", 10, false).unwrap();
         assert!(!short_hits.is_empty(), "单字应回退到扫描");
     }
 
@@ -782,7 +783,7 @@ mod tests {
         assert_eq!(book.chapter_count, 200, "基准书 200 章");
 
         let started = std::time::Instant::now();
-        let hits = search(&db, book.id, "夜色", 20).expect("搜索应当成功");
+        let hits = search(&db, book.id, "夜色", 20, false).expect("搜索应当成功");
         let search_ms = started.elapsed().as_millis();
         assert!(!hits.is_empty(), "「夜色」应当能搜到");
 
@@ -855,6 +856,101 @@ mod tests {
             .unwrap();
         }
         zip.finish().unwrap();
+    }
+
+    /// 生成一本正文可定制的最小 EPUB（繁简转换搜索测试用）。
+    fn mini_epub_with_body(path: &Path, title: &str, body: &str) {
+        use std::io::Write as _;
+        let file = std::fs::File::create(path).expect("建测试 epub");
+        let mut zip = zip::ZipWriter::new(file);
+        let stored: zip::write::FileOptions<'_, ()> =
+            zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        let deflated: zip::write::FileOptions<'_, ()> =
+            zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+        zip.start_file("mimetype", stored).unwrap();
+        zip.write_all(b"application/epub+zip").unwrap();
+        zip.start_file("META-INF/container.xml", deflated).unwrap();
+        zip.write_all(
+            br#"<?xml version="1.0"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles>
+</container>"#,
+        )
+        .unwrap();
+        zip.start_file("OEBPS/content.opf", deflated).unwrap();
+        zip.write_all(
+            format!(
+                r#"<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="id">test-trad</dc:identifier>
+    <dc:title>{title}</dc:title>
+    <dc:language>zh-Hant</dc:language>
+  </metadata>
+  <manifest><item id="ch1" href="Text/ch1.xhtml" media-type="application/xhtml+xml"/></manifest>
+  <spine><itemref idref="ch1"/></spine>
+</package>"#
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+        zip.start_file("OEBPS/Text/ch1.xhtml", deflated).unwrap();
+        zip.write_all(
+            format!(
+                r#"<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><body><p>{body}</p></body></html>"#
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+        zip.finish().unwrap();
+    }
+
+    /// 繁简转换模式：正文/查询/标题三条口径一致（所见=所搜）。
+    #[test]
+    fn search_converts_traditional_text_and_titles() {
+        let dir = temp_dir();
+        let db = Db::open(&dir.join("modu.db")).unwrap();
+        let epub = dir.join("traditional.epub");
+        mini_epub_with_body(&epub, "繁簡測試", "紙上的燈光");
+        let book_id = import(&db, &dir.join("covers"), &[epub.to_string_lossy().to_string()])[0]
+            .book
+            .as_ref()
+            .expect("导入应成功")
+            .id;
+
+        // 章节标题来自目录；这里没有 nav，手工改成繁体验证「命中标题同转换」。
+        db.with_mut(|conn| {
+            conn.execute(
+                "UPDATE chapters SET title = '第一章 燈' WHERE book_id = ?1",
+                [book_id],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+        let hit = |query: &str, convert: bool| search(&db, book_id, query, 10, convert).unwrap();
+
+        // 不转换：原文是繁体，「灯光」查不到，「燈光」查得到。
+        assert!(hit("灯光", false).is_empty(), "未开启转换时简体词不应命中繁体原文");
+        assert_eq!(hit("燈光", false).len(), 1);
+
+        // 转换模式：简体查询命中（正文转换后匹配），繁体查询也命中（查询词同样过 t2s）。
+        let simplified = hit("灯光", true);
+        assert_eq!(simplified.len(), 1, "开启转换后简体词应命中");
+        assert_eq!(
+            simplified[0].chapter_title.as_deref(),
+            Some("第一章 灯"),
+            "命中标题应与正文同为简体"
+        );
+        assert!(
+            simplified[0].snippet.contains("灯光"),
+            "snippet 应取自转换后文本：{}",
+            simplified[0].snippet
+        );
+        assert_eq!(hit("燈光", true).len(), 1, "繁体查询词经 t2s 后也应命中");
+        // 短查询（<3 字）同样走转换路径。
+        assert_eq!(hit("燈", true).len(), 1);
     }
 
     /// 段落之间要有分隔，否则 `第一章`+`纸上的灯` 会拼成一个词。
@@ -1395,6 +1491,8 @@ pub fn index_status(db: &Db, book_id: i64) -> AppResult<usize> {
 
 /// 把章节正文写进 FTS 表。导入时已写；旧数据在首次搜索时按需补建。
 pub fn index_book(db: &Db, book_id: i64, book: &OpenedBook) -> AppResult<usize> {
+    // 重新索引意味着正文可能变了（重新导入/文件替换），转换缓存必须失效。
+    drop_converted_cache(book_id);
     let mut rows: Vec<(String, String, i64)> = Vec::new();
     for item in &book.package.spine {
         let html = book.read_text(&item.path).unwrap_or_default();
@@ -1435,10 +1533,28 @@ const SNIPPET_MARK_END: char = '\u{2}';
 
 /// 全书搜索。>=3 字走 FTS5 trigram（短语匹配，中文无需分词），
 /// 更短的查询 trigram 索引帮不上忙，退回逐章扫描。
-pub fn search(db: &Db, book_id: i64, query: &str, limit: usize) -> AppResult<Vec<SearchHit>> {
+///
+/// `convert`（繁转简开启时）：索引里存的是**原始**文本，直接查简化词会
+/// 失配——所以转换模式下统一走「逐章取原文 → t2s → 再匹配」的路径，
+/// 与正文渲染（`book_section_html` 的同一转换）口径一致（所见=所搜）。
+///
+/// 注意：转换模式对 ASCII 词是**大小写敏感**的子串匹配（原 FTS 路径不敏感）。
+/// 中文书里这是可接受的口径差异，且与正文显示严格一致。
+pub fn search(
+    db: &Db,
+    book_id: i64,
+    query: &str,
+    limit: usize,
+    convert_traditional: bool,
+) -> AppResult<Vec<SearchHit>> {
     let needle = query.trim();
     if needle.is_empty() {
         return Ok(Vec::new());
+    }
+    if convert_traditional {
+        // 正文已是简体；查询词也过一遍 t2s（用户照着正文抄繁体也能命中）。
+        let needle = crate::convert::t2s(needle);
+        return scan_search(db, book_id, &needle, limit, true);
     }
     if needle.chars().count() >= 3 {
         match fts_search(db, book_id, needle, limit) {
@@ -1446,7 +1562,137 @@ pub fn search(db: &Db, book_id: i64, query: &str, limit: usize) -> AppResult<Vec
             _ => {}
         }
     }
-    scan_search(db, book_id, needle, limit)
+    scan_search(db, book_id, needle, limit, false)
+}
+
+/// 一章的文本（转换模式下缓存转换后的结果）。
+struct ChapterText {
+    index: usize,
+    href: String,
+    title: Option<String>,
+    text: String,
+}
+
+/// 转换文本缓存：书的正文在导入后不可变，按书缓存 t2s 结果即可。
+/// 容量上限 4 本（大书各约几百 KB），避免连续输入时每次整书重转。
+static CONVERTED_CACHE: Mutex<Vec<(i64, Arc<Vec<ChapterText>>)>> = Mutex::new(Vec::new());
+
+const CONVERTED_CACHE_BOOKS: usize = 4;
+
+fn cached_converted(book_id: i64) -> Option<Arc<Vec<ChapterText>>> {
+    let cache = CONVERTED_CACHE.lock().ok()?;
+    cache
+        .iter()
+        .find(|(id, _)| *id == book_id)
+        .map(|(_, rows)| Arc::clone(rows))
+}
+
+fn store_converted(book_id: i64, rows: Arc<Vec<ChapterText>>) {
+    if let Ok(mut cache) = CONVERTED_CACHE.lock() {
+        cache.retain(|(id, _)| *id != book_id);
+        cache.insert(0, (book_id, rows));
+        cache.truncate(CONVERTED_CACHE_BOOKS);
+    }
+}
+
+/// 清掉某本书的转换缓存（重新索引/重新导入后正文变了）。
+fn drop_converted_cache(book_id: i64) {
+    if let Ok(mut cache) = CONVERTED_CACHE.lock() {
+        cache.retain(|(id, _)| *id != book_id);
+    }
+}
+
+/// 逐章读取索引文本（唯一一份 SQL，供普通/转换两条路径共用）。
+///
+/// 回调返回 `false` 表示提前结束（已凑够 limit）。
+fn for_each_chapter<F>(db: &Db, book_id: i64, mut visit: F) -> AppResult<()>
+where
+    F: FnMut(usize, &str, Option<&str>, &str) -> bool,
+{
+    db.with(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT f.ord, f.href, c.title, f.text
+             FROM chapters_fts f
+             LEFT JOIN chapters c ON c.book_id = f.book_id AND c.ord = f.ord
+             WHERE f.book_id = ?1
+             ORDER BY f.ord",
+        )?;
+        let mut rows = stmt.query([book_id])?;
+        while let Some(row) = rows.next()? {
+            let index = row.get::<_, i64>(0)? as usize;
+            let href: String = row.get(1)?;
+            let title: Option<String> = row.get(2)?;
+            let text: String = row.get(3)?;
+            if !visit(index, &href, title.as_deref(), &text) {
+                break;
+            }
+        }
+        Ok(())
+    })
+}
+
+/// 取转换后的章节文本（首次构建后缓存）。
+fn converted_chapters(db: &Db, book_id: i64) -> AppResult<Arc<Vec<ChapterText>>> {
+    if let Some(cached) = cached_converted(book_id) {
+        return Ok(cached);
+    }
+    let mut rows = Vec::new();
+    for_each_chapter(db, book_id, |index, href, title, text| {
+        rows.push(ChapterText {
+            index,
+            href: href.to_string(),
+            title: title.map(crate::convert::t2s),
+            text: crate::convert::t2s(text),
+        });
+        true
+    })?;
+    let rows = Arc::new(rows);
+    store_converted(book_id, Arc::clone(&rows));
+    Ok(rows)
+}
+
+/// 逐章子串扫描（FTS 帮不上的短查询 / 转换模式都走这里）。
+///
+/// 转换模式下用缓存的转换文本匹配（snippet 与标题都来自转换后文本，
+/// 与正文显示一致）；普通模式直接匹配索引原文。
+fn scan_search(
+    db: &Db,
+    book_id: i64,
+    needle: &str,
+    limit: usize,
+    convert: bool,
+) -> AppResult<Vec<SearchHit>> {    let match_chars = needle.chars().count();
+    let mut hits = Vec::new();
+    if convert {
+        for chapter in converted_chapters(db, book_id)?.iter() {
+            if let Some(offset) = chapter.text.find(needle) {
+                hits.push(SearchHit {
+                    index: chapter.index,
+                    href: chapter.href.clone(),
+                    chapter_title: chapter.title.clone(),
+                    snippet: make_snippet(&chapter.text, offset, match_chars),
+                    offset,
+                });
+                if hits.len() >= limit {
+                    break;
+                }
+            }
+        }
+        return Ok(hits);
+    }
+    for_each_chapter(db, book_id, |index, href, title, text| {
+        if let Some(offset) = text.find(needle) {
+            hits.push(SearchHit {
+                index,
+                href: href.to_string(),
+                chapter_title: title.map(str::to_string),
+                snippet: make_snippet(text, offset, match_chars),
+                offset,
+            });
+        }
+        hits.len() < limit
+    })?;
+    Ok(hits)
 }
 
 fn fts_search(db: &Db, book_id: i64, needle: &str, limit: usize) -> AppResult<Vec<SearchHit>> {
@@ -1476,39 +1722,6 @@ fn fts_search(db: &Db, book_id: i64, needle: &str, limit: usize) -> AppResult<Ve
             },
         )?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
-    })
-}
-
-fn scan_search(db: &Db, book_id: i64, needle: &str, limit: usize) -> AppResult<Vec<SearchHit>> {
-    db.with(|conn| {
-        let mut stmt = conn.prepare(
-            "SELECT f.ord, f.href, c.title, f.text
-             FROM chapters_fts f
-             LEFT JOIN chapters c ON c.book_id = f.book_id AND c.ord = f.ord
-             WHERE f.book_id = ?1
-             ORDER BY f.ord",
-        )?;
-        let mut rows = stmt.query([book_id])?;
-        let mut hits = Vec::new();
-        while let Some(row) = rows.next()? {
-            let index = row.get::<_, i64>(0)? as usize;
-            let href: String = row.get(1)?;
-            let title: Option<String> = row.get(2)?;
-            let text: String = row.get(3)?;
-            if let Some(offset) = text.find(needle) {
-                hits.push(SearchHit {
-                    index,
-                    href,
-                    chapter_title: title,
-                    snippet: make_snippet(&text, offset, needle.chars().count()),
-                    offset,
-                });
-                if hits.len() >= limit {
-                    break;
-                }
-            }
-        }
-        Ok(hits)
     })
 }
 
