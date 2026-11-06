@@ -111,8 +111,8 @@ export function ReaderView({
       // 滚动模式不需要限列；留着会让内容被拆成多列
       renderer.removeAttribute('max-column-count')
     }
-    // 上下留白固定 24px：正文贴边不好看，又不值得做成用户选项
-    renderer.setAttribute('margin', '24px')
+    // 页边距是用户可调的（v0.4 重新独立出来），映射到 paginator 的 margin
+    renderer.setAttribute('margin', `${next.pagePadding}px`)
     // 行宽（版心）是用户可调的，直接交给 paginator 的 max-inline-size
     renderer.setAttribute('max-inline-size', `${next.pageWidth}px`)
     renderer.setStyles(buildReadingCss(next))
@@ -704,11 +704,13 @@ export function ReaderView({
       style={{ background: 'var(--reader-page-bg, #1e1e2e)' }}
     >
       {/* 阅读栏宽度由这里控制：paginator 会把自己的内容在这个容器里居中，
-          再用 max-inline-size 限制行宽（默认 720px → 中文约 35 字/行）。 */}
+          再用 max-inline-size 限制行宽（默认 720px → 中文约 35 字/行）。
+          容器宽需要覆盖「版心 + 两侧页边距」，否则页边距调大后
+          paginator 拿到的容器反而变窄，行宽悄悄小于版心设定。 */}
       <div
         ref={hostRef}
         className="mx-auto h-full w-full"
-        style={{ maxWidth: settings.pageWidth + 48 }}
+        style={{ maxWidth: settings.pageWidth + settings.pagePadding * 2 }}
       />
     </div>
   )

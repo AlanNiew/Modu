@@ -39,6 +39,8 @@ export interface ReadingSettings {
   paragraphIndent: number
   /** 版心宽度上限，单位 px（传给 paginator 的 max-inline-size） */
   pageWidth: number
+  /** 页边距（正文四周留白），单位 px（0–64；v0.4 重新独立，与版心解耦） */
+  pagePadding: number
   /** 分页还是滚动阅读 */
   flow: ReadingFlow
   /** 正文对齐：中文默认两端对齐，也可左对齐（混合排版时更自然） */
@@ -241,6 +243,7 @@ export const DEFAULT_READING_SETTINGS: ReadingSettings = {
   lineHeight: 1.85,
   paragraphIndent: 2,
   pageWidth: 720,
+  pagePadding: 24,
   textAlign: 'justify',
   paragraphSpacing: 0.72,
   letterSpacing: 0,

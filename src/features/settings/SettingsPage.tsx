@@ -1,10 +1,21 @@
 import { getVersion } from '@tauri-apps/api/app'
-import { Check, Info } from 'lucide-react'
+import { Check, Info, RotateCcw } from 'lucide-react'
 import { useEffect, useState } from 'react'
 
+import { Segmented, SliderRow, SwitchRow } from '../../components/option-controls'
+import {
+  ALIGN_OPTIONS,
+  FLOW_OPTIONS,
+  indentEnabledToEm,
+  indentEmToEnabled,
+} from '../../renderer/reading-options'
 import { cn } from '../../lib/cn'
-import { THEME_OPTIONS, type ThemeId, themeSwatch } from '../../renderer/theme'
-import { useReaderSettings } from '../../store/settings'
+import {
+  THEME_OPTIONS,
+  type ThemeId,
+  themeSwatch,
+} from '../../renderer/theme'
+import { fontStackLabel, useReaderSettings } from '../../store/settings'
 
 export type SettingsTabId = 'appearance' | 'typography' | 'conversion' | 'behavior' | 'about'
 
@@ -24,15 +35,10 @@ interface SettingsPageProps {
 }
 
 /**
- * 设置页（P1：骨架 + 外观分组可用）。
+ * 设置页（P2：外观 + 排版全量 + 行为可用；转换占位 P4）。
  *
- * 后续阶段逐步解锁：
- * - 排版：字体（扩充预设 + 用户自定义导入）/字号/行高/缩进/段距/字距/页边距/版心/流向/净版
- * - 转换：繁体→简体
- * - 行为：更新检查/关闭窗口行为/开机自启/托盘
- *
- * 这些设置本来就持久化在 `modu:reader-settings` 里，本页只是换一个
- * 「固定入口、可完整自定义」的家；阅读页的排版快速面板继续保留常用子集。
+ * 这些设置持久化在 `modu:reader-settings`（localStorage），阅读页的排版
+ * 快速面板与本页共享同一份状态：本页是「全量版」，快速面板是常用子集。
  */
 export function SettingsPage({ initialTab = null, onCheckUpdate }: SettingsPageProps) {
   const [tab, setTab] = useState<SettingsTabId>(initialTab ?? 'appearance')
@@ -64,20 +70,9 @@ export function SettingsPage({ initialTab = null, onCheckUpdate }: SettingsPageP
       </nav>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto w-full max-w-2xl px-8 py-8">
+        <div className="mx-auto w-full max-w-2xl space-y-8 px-8 py-8">
           {tab === 'appearance' && <AppearanceSection />}
-          {tab === 'typography' && (
-            <PlaceholderSection
-              title="排版"
-              items={[
-                '字体（扩充预设 + 用户自定义导入）',
-                '字号 / 行高 / 字间距',
-                '段落缩进 / 段间距 / 页边距 / 版心宽',
-                '阅读流向（翻页 / 滚动）与净版模式',
-              ]}
-              note="该分组将在下一阶段开放；当前可继续使用阅读页标题栏的「排版」快速面板调整这些设置。"
-            />
-          )}
+          {tab === 'typography' && <TypographySection />}
           {tab === 'conversion' && (
             <PlaceholderSection
               title="转换"
@@ -85,17 +80,7 @@ export function SettingsPage({ initialTab = null, onCheckUpdate }: SettingsPageP
               note="该功能依赖 Rust 侧繁简词典，将在后续阶段开放。"
             />
           )}
-          {tab === 'behavior' && (
-            <PlaceholderSection
-              title="行为"
-              items={[
-                '启动时自动检查更新（从更新面板迁入）',
-                '关闭窗口行为（询问一次并记忆 / 直接退出 / 最小化到托盘）',
-                '开机自启 · 系统托盘',
-              ]}
-              note="托盘与关闭询问将在后续阶段开放。"
-            />
-          )}
+          {tab === 'behavior' && <BehaviorSection />}
           {tab === 'about' && <AboutSection onCheckUpdate={onCheckUpdate} />}
         </div>
       </div>
@@ -107,7 +92,26 @@ function SectionTitle({ children }: { children: string }) {
   return <h2 className="text-[15px] font-semibold text-text">{children}</h2>
 }
 
-/** 外观：主题（跟随系统 / 深色 / 浅色 / 羊皮纸 / 护眼绿）+ 正文对齐。 */
+/** 设置分组通用骨架：标题 + 内容 + 底部说明。 */
+function Group({
+  title,
+  note,
+  children,
+}: {
+  title: string
+  note?: string
+  children: React.ReactNode
+}) {
+  return (
+    <section className="space-y-3">
+      <SectionTitle>{title}</SectionTitle>
+      <div className="space-y-4">{children}</div>
+      {note && <p className="text-[11px] leading-relaxed text-overlay0">{note}</p>}
+    </section>
+  )
+}
+
+/** 外观：主题（5 选）+ 正文对齐。 */
 function AppearanceSection() {
   const theme = useReaderSettings((state) => state.settings.theme)
   const textAlign = useReaderSettings((state) => state.settings.textAlign)
@@ -115,53 +119,180 @@ function AppearanceSection() {
   const patch = useReaderSettings((state) => state.patch)
 
   return (
-    <section className="space-y-4">
-      <SectionTitle>主题</SectionTitle>
-      <div className="flex flex-wrap gap-3 pt-1">
-        {THEME_OPTIONS.map((option) => {
-          const active: boolean = theme === option.id
-          return (
-            <ThemeButton
-              key={option.id}
-              id={option.id}
-              label={option.label}
-              active={active}
-              onSelect={() => setTheme(option.id)}
-            />
-          )
-        })}
-      </div>
-      <p className="text-[11px] leading-relaxed text-overlay0">
-        主题同时作用于界面外壳与正文页面；「跟随系统」会随 Windows 深浅色设置实时切换。
-      </p>
+    <>
+      <Group title="主题" note="主题同时作用于界面外壳与正文页面；「跟随系统」会随 Windows 深浅色设置实时切换。">
+        <div className="flex flex-wrap gap-3 pt-1">
+          {THEME_OPTIONS.map((option) => {
+            const active: boolean = theme === option.id
+            return (
+              <ThemeButton
+                key={option.id}
+                id={option.id}
+                label={option.label}
+                active={active}
+                onSelect={() => setTheme(option.id)}
+              />
+            )
+          })}
+        </div>
+      </Group>
+      <Group title="正文对齐" note="中文正文默认两端对齐；中英混排的书选「左对齐」可能更自然。">
+        <Segmented options={ALIGN_OPTIONS} value={textAlign} onChange={(textAlign) => patch({ textAlign })} />
+      </Group>
+    </>
+  )
+}
 
-      <SectionTitle>正文对齐</SectionTitle>
-      <div className="flex gap-1 self-start rounded-lg border border-surface0 bg-mantle p-0.5 w-fit">
-        {(
-          [
-            { id: 'justify', label: '两端对齐' },
-            { id: 'left', label: '左对齐' },
-          ] as const
-        ).map((option) => (
-          <button
-            key={option.id}
-            type="button"
-            onClick={() => patch({ textAlign: option.id })}
-            className={cn(
-              'rounded-md px-3 py-1.5 text-[12px] transition',
-              textAlign === option.id
-                ? 'bg-surface0 text-text'
-                : 'text-overlay1 hover:text-subtext',
-            )}
-          >
-            {option.label}
-          </button>
-        ))}
-      </div>
-      <p className="text-[11px] leading-relaxed text-overlay0">
-        中文正文默认两端对齐；中英混排的书选「左对齐」可能更自然。
-      </p>
-    </section>
+/** 排版：全量排版选项（字体分组随 P3 扩充导入）。 */
+function TypographySection() {
+  // 字段级订阅：任一滑杆拖动只让本分组内的读取点重渲，
+  // 避免整库订阅把 App/标题栏/其它分组全带起来。
+  const flow = useReaderSettings((state) => state.settings.flow)
+  const fontSize = useReaderSettings((state) => state.settings.fontSize)
+  const lineHeight = useReaderSettings((state) => state.settings.lineHeight)
+  const pagePadding = useReaderSettings((state) => state.settings.pagePadding)
+  const pageWidth = useReaderSettings((state) => state.settings.pageWidth)
+  const paragraphSpacing = useReaderSettings((state) => state.settings.paragraphSpacing)
+  const letterSpacing = useReaderSettings((state) => state.settings.letterSpacing)
+  const paragraphIndent = useReaderSettings((state) => state.settings.paragraphIndent)
+  const respectPublisherStyles = useReaderSettings((state) => state.settings.respectPublisherStyles)
+  const fontFamily = useReaderSettings((state) => state.settings.fontFamily)
+  const patch = useReaderSettings((state) => state.patch)
+  const reset = useReaderSettings((state) => state.reset)
+
+  return (
+    <>
+      <Group
+        title="版式"
+        note="修改立即生效并重新分栏，阅读位置自动跟随。"
+      >
+        <div className="space-y-3">
+          <div className="space-y-2">
+            <div className="text-[11px] text-subtext">阅读流向</div>
+            <Segmented options={FLOW_OPTIONS} value={flow} onChange={(flow) => patch({ flow })} />
+          </div>
+          <SliderRow
+            label="字号"
+            value={fontSize}
+            suffix=" px"
+            min={14}
+            max={32}
+            step={1}
+            onChange={(fontSize) => patch({ fontSize })}
+          />
+          <SliderRow
+            label="行高"
+            value={Number(lineHeight.toFixed(2))}
+            min={1.2}
+            max={2.4}
+            step={0.05}
+            onChange={(lineHeight) => patch({ lineHeight })}
+          />
+          <SliderRow
+            label="页边距"
+            value={pagePadding}
+            suffix=" px"
+            min={0}
+            max={64}
+            step={4}
+            onChange={(pagePadding) => patch({ pagePadding })}
+          />
+          <SliderRow
+            label="版心宽度"
+            value={pageWidth}
+            suffix=" px"
+            min={520}
+            max={1000}
+            step={20}
+            onChange={(pageWidth) => patch({ pageWidth })}
+          />
+          <SliderRow
+            label="段落间距"
+            value={Number(paragraphSpacing.toFixed(2))}
+            suffix=" em"
+            min={0}
+            max={1.6}
+            step={0.04}
+            onChange={(paragraphSpacing) => patch({ paragraphSpacing })}
+          />
+          <SliderRow
+            label="字间距"
+            value={Number(letterSpacing.toFixed(2))}
+            suffix=" em"
+            min={-0.02}
+            max={0.2}
+            step={0.01}
+            onChange={(letterSpacing) => patch({ letterSpacing })}
+          />
+        </div>
+      </Group>
+
+      <Group title="段落与净版">
+        <SwitchRow
+          label="段落首行缩进（2 字）"
+          description="关闭后所有段落不缩进（西文书常用）"
+          checked={indentEmToEnabled(paragraphIndent)}
+          onChange={(checked) => patch({ paragraphIndent: indentEnabledToEm(checked) })}
+        />
+        <SwitchRow
+          label="净版模式（忽略书内排版）"
+          description="只按本应用的排版渲染，只适合排版花乱的老书"
+          checked={!respectPublisherStyles}
+          onChange={(checked) => patch({ respectPublisherStyles: !checked })}
+        />
+      </Group>
+
+      <Group title="字体" note="P3 将开放：预设字体列表扩充 + 导入本地 ttf/otf 字体文件。当前可在阅读页快速面板快速切换宋 / 黑 / 楷。">
+        <p className="text-[12px] text-subtext">
+          当前字体：
+          <span className="font-medium text-text">{fontStackLabel(fontFamily)}</span>
+        </p>
+      </Group>
+
+      <section className="space-y-3 border-t border-surface0/60 pt-5">
+        <SectionTitle>恢复默认</SectionTitle>
+        <button
+          type="button"
+          onClick={reset}
+          className="flex items-center gap-1.5 rounded-lg border border-surface0 px-3 py-2 text-[12px] text-overlay0 transition hover:border-overlay0 hover:text-text"
+        >
+          <RotateCcw size={13} />
+          恢复全部排版与外观默认值
+        </button>
+        <p className="text-[11px] text-overlay0">不影响书架、进度、书签与批注数据。</p>
+      </section>
+    </>
+  )
+}
+
+/** 行为：更新检查（迁移自更新面板）+ P5 占位。 */
+function BehaviorSection() {
+  // autoCheck 自 P2 起并入 settings store：这里是唯一的读写入口，
+  // 与 App 的启动静默检查共享一份状态，不存在镜像漂移。
+  const autoCheck = useReaderSettings((state) => state.autoCheck)
+  const setAutoCheck = useReaderSettings((state) => state.setAutoCheck)
+
+  return (
+    <>
+      <Group
+        title="软件更新"
+        note="更新包会先校验签名再静默安装，完成后自动重启；书架、进度、书签与批注数据不受影响。"
+      >
+        <SwitchRow
+          label="启动时自动检查更新"
+          checked={autoCheck}
+          onChange={setAutoCheck}
+        />
+      </Group>
+      <PlaceholderSection
+        title="窗口与系统"
+        items={[
+          '关闭窗口行为（询问一次并记忆 / 直接退出 / 最小化到托盘）',
+          '开机自启 · 系统托盘',
+        ]}
+        note="托盘与关闭询问依赖 Rust 侧生命周期，将在后续阶段开放。"
+      />
+    </>
   )
 }
 
@@ -199,7 +330,7 @@ function ThemeButton({
   )
 }
 
-/** 尚未开放分组的占位说明（P2 起逐个替换）。 */
+/** 尚未开放分组的占位说明（后续阶段逐个替换）。 */
 function PlaceholderSection({
   title,
   items,

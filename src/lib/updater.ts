@@ -78,25 +78,5 @@ export async function restartApp(): Promise<void> {
   await relaunch()
 }
 
-const AUTO_CHECK_KEY = 'modu:update:auto-check'
-
-/** 启动时是否静默检查更新（默认开启）。 */
-export function autoCheckEnabled(): boolean {
-  try {
-    const raw = window.localStorage.getItem(AUTO_CHECK_KEY)
-    return raw === null ? true : raw === '1'
-  } catch {
-    return true
-  }
-}
-
-export function setAutoCheckEnabled(enabled: boolean): void {
-  try {
-    window.localStorage.setItem(AUTO_CHECK_KEY, enabled ? '1' : '0')
-  } catch {
-    // 隐私模式等场景下 localStorage 不可用：忽略，保持默认行为。
-  }
-}
-
 /** 发布页地址：更新失败时给用户的手动下载出口。 */
 export const RELEASES_URL = 'https://github.com/AlanNiew/Modu/releases/latest'

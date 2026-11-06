@@ -13,51 +13,128 @@ import {
  *
  * 为什么不进 Rust/SQLite：这是「偏好」而不是「书的数据」，
  * 换机器跟着 localStorage 走更简单，也不会因为数据库迁移丢设置。
+ *
+ * `autoCheck`（启动时自动检查更新）原本独立放在 `modu:update:auto-check`
+ * 这个 localStorage 键由更新面板读写；P2 起并入本 store（设置-行为分组），
+ * 旧键在首次水合时读取一次并作为默认值，之后统一走本 store。
  */
 interface SettingsState {
   settings: ReadingSettings
+  autoCheck: boolean
   patch: (partial: Partial<ReadingSettings>) => void
   setTheme: (theme: ThemeId) => void
   setFontFamilyKind: (kind: 'serif' | 'sans' | 'kai') => void
+  setAutoCheck: (enabled: boolean) => void
   reset: () => void
 }
 
 /**
  * 设置迁移（逐级向上兼容）：
- * - v1 → v2：去掉 `justify` 与 `pagePadding`（对齐改由 textAlign 控制，页边距由版心推导），
+ * - v1 → v2：去掉 `justify` 与 `pagePadding`（v2 起旧页边距由版心推导），
  *   主题升级为支持 `auto`
  * - v2 → v3：新增 `textAlign` / `paragraphSpacing` / `letterSpacing` / `respectPublisherStyles`，
- *   缺字段由 DEFAULT_READING_SETTINGS 补齐，旧数据无需改写
+ *   缺字段由默认值补齐，旧数据无需改写
+ * - v0.4（持久化版本仍为 3）：`pagePadding` 独立回归（默认 24px）。
+ *   只有 v1/v2 的旧数据（走 persist migrate 的 legacy 路径）需要丢弃
+ *   旧语义的 pagePadding / justify；v3+ 数据按字段直接合入。
  */
-interface PersistedV1 {
-  settings?: Partial<ReadingSettings> & { justify?: boolean; pagePadding?: number }
+
+// ReadingSettings 里用户可调的数值字段及其合法区间（超出会被钳回）。
+// UI（滑杆）与持久化归一化共用以保证口径一致；键名即任务书 §4.3 的字段。
+const NUMERIC_RANGES: Partial<Record<keyof ReadingSettings, [number, number]>> = {
+  fontSize: [14, 32],
+  lineHeight: [1.2, 2.4],
+  paragraphIndent: [0, 4],
+  pageWidth: [480, 1100],
+  pagePadding: [0, 64],
+  paragraphSpacing: [0, 2],
+  letterSpacing: [-0.06, 0.3],
 }
 
-function migrate(persisted: unknown): { settings: ReadingSettings } {
-  const saved = (persisted as PersistedV1 | undefined)?.settings ?? {}
-  const { justify: _justify, pagePadding: _pagePadding, ...rest } = saved
-  return { settings: { ...DEFAULT_READING_SETTINGS, ...rest } }
+/** 白名单拷入一个字段；数值字段越界时钳回合法区间。 */
+function adopt<K extends keyof ReadingSettings>(
+  target: ReadingSettings,
+  key: K,
+  value: unknown,
+): void {
+  if (value === undefined) return
+  const range = NUMERIC_RANGES[key]
+  const candidate =
+    range && typeof value === 'number' && Number.isFinite(value)
+      ? Math.min(range[1], Math.max(range[0], value))
+      : value
+  // 白名单键的取值由键名决定，运行时来自可信持久化数据；
+  // 这里按键名收窄到对应属性类型（单点收窄，不做整对象洗白）。
+  target[key] = candidate as ReadingSettings[K]
+}
+
+/** 旧数据归一化：白名单字段 + 数值钳制；`dropLegacyKeys` 时丢弃 v1/v2 旧键。 */
+export function normalizeSettings(
+  saved: Partial<ReadingSettings> | Record<string, unknown> | undefined,
+  { dropLegacyKeys = false }: { dropLegacyKeys?: boolean } = {},
+): ReadingSettings {
+  const source = (saved && typeof saved === 'object' ? saved : {}) as Record<string, unknown>
+  if (dropLegacyKeys) {
+    delete source.justify
+    delete source.pagePadding
+  }
+  // 只接受默认值表里出现过的键（防外来/损坏数据注入多余字段）。
+  const merged: ReadingSettings = { ...DEFAULT_READING_SETTINGS }
+  for (const key of Object.keys(DEFAULT_READING_SETTINGS) as Array<keyof ReadingSettings>) {
+    adopt(merged, key, source[key])
+  }
+  return merged
+}
+
+/** 旧版独立键（P2 之前由更新面板写的），首次水合时迁移进 store。 */
+const LEGACY_AUTO_CHECK_KEY = 'modu:update:auto-check'
+
+function readLegacyAutoCheck(): boolean {
+  try {
+    const raw = window.localStorage.getItem(LEGACY_AUTO_CHECK_KEY)
+    return raw === null ? true : raw === '1'
+  } catch {
+    return true
+  }
+}
+
+function migrate(persisted: unknown): { settings: ReadingSettings; autoCheck: boolean } {
+  const saved = (persisted as { settings?: Partial<ReadingSettings> } | undefined)?.settings
+  const autoCheck = (persisted as { autoCheck?: boolean } | undefined)?.autoCheck
+  return {
+    settings: normalizeSettings(saved, { dropLegacyKeys: true }),
+    autoCheck: typeof autoCheck === 'boolean' ? autoCheck : readLegacyAutoCheck(),
+  }
 }
 
 export const useReaderSettings = create<SettingsState>()(
   persist(
     (set) => ({
       settings: DEFAULT_READING_SETTINGS,
+      autoCheck: true,
       patch: (partial) => set((prev) => ({ settings: { ...prev.settings, ...partial } })),
       setTheme: (theme) => set((prev) => ({ settings: { ...prev.settings, theme } })),
       setFontFamilyKind: (kind) =>
         set((prev) => ({ settings: { ...prev.settings, fontFamily: FONT_STACKS[kind] } })),
+      setAutoCheck: (autoCheck) => set({ autoCheck }),
       reset: () => set({ settings: DEFAULT_READING_SETTINGS }),
     }),
     {
       name: 'modu:reader-settings',
       version: 3,
-      // 只持久化 settings，避免把函数写进 localStorage
-      partialize: (state) => ({ settings: state.settings }),
+      // 只持久化 settings 与 autoCheck，避免把函数写进 localStorage
+      partialize: (state) => ({ settings: state.settings, autoCheck: state.autoCheck }),
       migrate: (persisted) => migrate(persisted),
       merge: (persisted, current) => {
-        const saved = (persisted as { settings?: Partial<ReadingSettings> } | undefined)?.settings
-        return { ...current, settings: { ...DEFAULT_READING_SETTINGS, ...saved } }
+        const saved = persisted as
+          | { settings?: Partial<ReadingSettings>; autoCheck?: boolean }
+          | undefined
+        return {
+          ...current,
+          settings: normalizeSettings(saved?.settings),
+          autoCheck:
+            typeof saved?.autoCheck === 'boolean' ? saved.autoCheck : readLegacyAutoCheck(),
+        }
       },
     },
   ),
@@ -68,4 +145,10 @@ export function fontFamilyKind(fontFamily: string): 'serif' | 'sans' | 'kai' {
   if (fontFamily === FONT_STACKS.sans) return 'sans'
   if (fontFamily === FONT_STACKS.kai) return 'kai'
   return 'serif'
+}
+
+/** 供「关于/关于更新」等处展示的可读字体名（取栈首并去引号）。 */
+export function fontStackLabel(fontFamily: string): string {
+  const first = fontFamily.split(',')[0]?.trim().replace(/^["']|["']$/g, '')
+  return first || fontFamily
 }

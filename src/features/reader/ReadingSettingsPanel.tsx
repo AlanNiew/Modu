@@ -1,86 +1,35 @@
 import * as Popover from '@radix-ui/react-popover'
-import * as Slider from '@radix-ui/react-slider'
-import * as Switch from '@radix-ui/react-switch'
 import { RotateCcw } from 'lucide-react'
+import type { ReactNode } from 'react'
 
+import { Segmented, SliderRow, SwitchRow } from '../../components/option-controls'
 import { cn } from '../../lib/cn'
 import {
-  FONT_STACKS,
-  THEME_OPTIONS,
-  type ReadingFlow,
-  themeSwatch,
-} from '../../renderer/theme'
+  ALIGN_OPTIONS,
+  FLOW_OPTIONS,
+  indentEnabledToEm,
+  indentEmToEnabled,
+} from '../../renderer/reading-options'
+import { FONT_STACKS, THEME_OPTIONS, themeSwatch } from '../../renderer/theme'
 import { useReaderSettings } from '../../store/settings'
 
-const ALIGN_OPTIONS: Array<{ id: 'justify' | 'left'; label: string }> = [
-  { id: 'justify', label: '两端对齐' },
-  { id: 'left', label: '左对齐' },
-]
+interface ReadingSettingsPanelProps {
+  children: ReactNode
+}
 
-const FLOW_OPTIONS: Array<{ id: ReadingFlow; label: string }> = [
-  { id: 'paginated', label: '翻页' },
-  { id: 'scrolled', label: '滚动' },
-]
-
-const FONT_OPTIONS: Array<{ kind: 'serif' | 'sans' | 'kai'; label: string }> = [
+/** 快速面板的字体三分类入口（完整列表在 P3 的设置-排版开放）。 */
+const FONT_OPTIONS: ReadonlyArray<{ kind: 'serif' | 'sans' | 'kai'; label: string }> = [
   { kind: 'serif', label: '宋体' },
   { kind: 'sans', label: '黑体' },
   { kind: 'kai', label: '楷体' },
 ]
 
-interface ReadingSettingsPanelProps {
-  children: React.ReactNode
-}
-
-function SliderRow({
-  label,
-  value,
-  suffix,
-  min,
-  max,
-  step,
-  onChange,
-}: {
-  label: string
-  value: number
-  suffix?: string
-  min: number
-  max: number
-  step: number
-  onChange: (value: number) => void
-}) {
-  return (
-    <div className="space-y-1.5">
-      <div className="flex items-center justify-between text-[11px] text-subtext">
-        <span>{label}</span>
-        <span className="tabular-nums text-overlay0">
-          {value}
-          {suffix}
-        </span>
-      </div>
-      <Slider.Root
-        className="relative flex h-4 w-full touch-none select-none items-center"
-        value={[value]}
-        min={min}
-        max={max}
-        step={step}
-        onValueChange={([next]) => onChange(next)}
-      >
-        <Slider.Track className="relative h-1 grow rounded-full bg-surface0">
-          <Slider.Range className="absolute h-full rounded-full bg-blue/80" />
-        </Slider.Track>
-        <Slider.Thumb className="block h-3.5 w-3.5 rounded-full bg-text shadow outline-none transition hover:bg-blue focus-visible:ring-2 focus-visible:ring-blue/60" />
-      </Slider.Root>
-    </div>
-  )
-}
-
 /**
  * 阅读排版快速面板（阅读页标题栏保留的常用子集，P1 起由 App 渲染）。
  *
  * 这里是阅读中的高频调整入口；数据直接读 `useReaderSettings`，
- * 与设置页共享同一份持久化状态。完整设置页（后续阶段的排版/转换/
- * 行为分组）提供全量自定义。
+ * 与设置页共享同一份持久化状态。完整设置页提供全量自定义（含字体
+ * 预设列表与自定义导入，见 P3；页边距等回归项见 P2）。
  */
 export function ReadingSettingsPanel({ children }: ReadingSettingsPanelProps) {
   const settings = useReaderSettings((state) => state.settings)
@@ -134,46 +83,15 @@ export function ReadingSettingsPanel({ children }: ReadingSettingsPanelProps) {
               </div>
             </div>
 
-            <div className="space-y-2">
-              <div className="text-[11px] text-subtext">字体</div>
-              <div className="grid grid-cols-3 gap-1 rounded-lg bg-surface0/50 p-1">
-                {FONT_OPTIONS.map((option) => (
-                  <button
-                    key={option.kind}
-                    type="button"
-                    onClick={() => onFontKind(option.kind)}
-                    className={cn(
-                      'rounded-md py-1.5 text-[11px] transition',
-                      activeFont === option.kind
-                        ? 'bg-surface1 text-text'
-                        : 'text-overlay0 hover:text-text',
-                    )}
-                  >
-                    {option.label}
-                  </button>
-                ))}
-              </div>
-            </div>
+            <Segmented
+              options={FONT_OPTIONS.map(({ kind, label }) => ({ id: kind, label }))}
+              value={activeFont}
+              onChange={(kind) => onFontKind(kind)}
+            />
 
             <div className="space-y-2">
               <div className="text-[11px] text-subtext">阅读方式</div>
-              <div className="grid grid-cols-2 gap-1 rounded-lg bg-surface0/50 p-1">
-                {FLOW_OPTIONS.map((option) => (
-                  <button
-                    key={option.id}
-                    type="button"
-                    onClick={() => onPatch({ flow: option.id })}
-                    className={cn(
-                      'rounded-md py-1.5 text-[11px] transition',
-                      settings.flow === option.id
-                        ? 'bg-surface1 text-text'
-                        : 'text-overlay0 hover:text-text',
-                    )}
-                  >
-                    {option.label}
-                  </button>
-                ))}
-              </div>
+              <Segmented options={FLOW_OPTIONS} value={settings.flow} onChange={(flow) => onPatch({ flow })} />
               <div className="px-1 text-[10px] leading-relaxed text-overlay0/70">
                 翻页：左右翻，滚轮一滑翻一页；滚动：上下连续滑动
               </div>
@@ -191,7 +109,7 @@ export function ReadingSettingsPanel({ children }: ReadingSettingsPanelProps) {
             <SliderRow
               label="行高"
               value={Number(settings.lineHeight.toFixed(2))}
-              min={1.3}
+              min={1.2}
               max={2.4}
               step={0.05}
               onChange={(lineHeight) => onPatch({ lineHeight })}
@@ -226,51 +144,23 @@ export function ReadingSettingsPanel({ children }: ReadingSettingsPanelProps) {
 
             <div className="space-y-2">
               <div className="text-[11px] text-subtext">正文对齐</div>
-              <div className="grid grid-cols-2 gap-1 rounded-lg bg-surface0/50 p-1">
-                {ALIGN_OPTIONS.map((option) => (
-                  <button
-                    key={option.id}
-                    type="button"
-                    onClick={() => onPatch({ textAlign: option.id })}
-                    className={cn(
-                      'rounded-md py-1.5 text-[11px] transition',
-                      settings.textAlign === option.id
-                        ? 'bg-surface1 text-text'
-                        : 'text-overlay0 hover:text-text',
-                    )}
-                  >
-                    {option.label}
-                  </button>
-                ))}
-              </div>
+              <Segmented options={ALIGN_OPTIONS} value={settings.textAlign} onChange={(textAlign) => onPatch({ textAlign })} />
             </div>
 
-            <label className="flex items-center justify-between text-[11px] text-subtext">
-              <span className="flex flex-col">
-                <span>净版（忽略书内排版）</span>
-                <span className="text-[10px] text-overlay0/70">排版花乱的老书可以打开</span>
-              </span>
-              <Switch.Root
-                checked={!settings.respectPublisherStyles}
-                onCheckedChange={(checked) =>
-                  onPatch({ respectPublisherStyles: !checked })
-                }
-                className="relative h-4 w-8 shrink-0 rounded-full bg-surface1 transition data-[state=checked]:bg-blue"
-              >
-                <Switch.Thumb className="block h-3 w-3 translate-x-0.5 rounded-full bg-text transition-transform data-[state=checked]:translate-x-4" />
-              </Switch.Root>
-            </label>
+            <SwitchRow
+              label="净版（忽略书内排版）"
+              description="排版花乱的老书可以打开"
+              checked={!settings.respectPublisherStyles}
+              onChange={(checked) => onPatch({ respectPublisherStyles: !checked })}
+            />
 
-            <label className="flex items-center justify-between border-t border-surface0/70 pt-3 text-[11px] text-subtext">
-              <span>段落首行缩进</span>
-              <Switch.Root
-                checked={settings.paragraphIndent > 0}
-                onCheckedChange={(checked) => onPatch({ paragraphIndent: checked ? 2 : 0 })}
-                className="relative h-4 w-8 rounded-full bg-surface1 transition data-[state=checked]:bg-blue"
-              >
-                <Switch.Thumb className="block h-3 w-3 translate-x-0.5 rounded-full bg-text transition-transform data-[state=checked]:translate-x-4" />
-              </Switch.Root>
-            </label>
+            <div className="border-t border-surface0/70 pt-3">
+              <SwitchRow
+                label="段落首行缩进"
+                checked={indentEmToEnabled(settings.paragraphIndent)}
+                onChange={(checked) => onPatch({ paragraphIndent: indentEnabledToEm(checked) })}
+              />
+            </div>
 
             <button
               type="button"

@@ -7,11 +7,9 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   RELEASES_URL,
   UPDATER_AVAILABLE,
-  autoCheckEnabled,
   checkForUpdates,
   downloadAndInstall,
   restartApp,
-  setAutoCheckEnabled,
   type AvailableUpdate,
 } from '../lib/updater'
 
@@ -36,7 +34,6 @@ export function UpdateDialog({ open, onOpenChange, initialUpdate }: UpdateDialog
   const [currentVersion, setCurrentVersion] = useState('')
   const [progress, setProgress] = useState({ downloaded: 0, total: null as number | null })
   const [error, setError] = useState('')
-  const [autoCheck, setAutoCheck] = useState(autoCheckEnabled())
   const runIdRef = useRef(0)
 
   const runCheck = useCallback(async () => {
@@ -64,9 +61,9 @@ export function UpdateDialog({ open, onOpenChange, initialUpdate }: UpdateDialog
   }, [])
 
   // 打开时：有启动检查预先拿到的更新就直接展示，否则现场检查一次。
+  // 「启动时自动检查更新」开关自 P2 起在 设置 → 行为 分组。
   useEffect(() => {
     if (!open) return
-    setAutoCheck(autoCheckEnabled())
     if (!UPDATER_AVAILABLE) {
       setStage('error')
       setError('开发模式不检查更新（更新只在安装版中生效）。')
@@ -94,11 +91,6 @@ export function UpdateDialog({ open, onOpenChange, initialUpdate }: UpdateDialog
       setStage('error')
     }
   }, [update])
-
-  const toggleAutoCheck = useCallback((next: boolean) => {
-    setAutoCheck(next)
-    setAutoCheckEnabled(next)
-  }, [])
 
   const percent =
     progress.total && progress.total > 0
@@ -220,55 +212,43 @@ export function UpdateDialog({ open, onOpenChange, initialUpdate }: UpdateDialog
             )}
           </div>
 
-          <div className="mt-4 flex items-center justify-between gap-3">
-            <label className="flex cursor-pointer items-center gap-2 text-[11px] text-overlay0">
-              <input
-                type="checkbox"
-                checked={autoCheck}
-                onChange={(event) => toggleAutoCheck(event.target.checked)}
-                className="h-3.5 w-3.5 rounded border-surface1 bg-crust accent-blue"
-              />
-              启动时自动检查更新
-            </label>
-
-            <div className="flex items-center gap-2">
-              {(stage === 'error' || stage === 'latest') && (
-                <button
-                  type="button"
-                  onClick={() => void runCheck()}
-                  className="rounded-md border border-surface1 px-2.5 py-1 text-[11px] text-subtext transition hover:bg-surface0 hover:text-text"
-                >
-                  重新检查
-                </button>
-              )}
-              {stage === 'available' && (
-                <button
-                  type="button"
-                  onClick={() => void handleInstall()}
-                  className="rounded-md bg-blue px-3 py-1.5 text-[12px] font-medium text-crust transition hover:brightness-110"
-                >
-                  立即更新
-                </button>
-              )}
-              {stage === 'done' && (
-                <button
-                  type="button"
-                  onClick={() => void restartApp()}
-                  className="rounded-md bg-blue px-3 py-1.5 text-[12px] font-medium text-crust transition hover:brightness-110"
-                >
-                  重启应用
-                </button>
-              )}
-              {stage === 'error' && (
-                <button
-                  type="button"
-                  onClick={() => void openUrl(RELEASES_URL)}
-                  className="rounded-md bg-surface0 px-2.5 py-1 text-[11px] text-text transition hover:bg-surface1"
-                >
-                  手动下载
-                </button>
-              )}
-            </div>
+          <div className="mt-4 flex items-center justify-end gap-2">
+            {(stage === 'error' || stage === 'latest') && (
+              <button
+                type="button"
+                onClick={() => void runCheck()}
+                className="rounded-md border border-surface1 px-2.5 py-1 text-[11px] text-subtext transition hover:bg-surface0 hover:text-text"
+              >
+                重新检查
+              </button>
+            )}
+            {stage === 'available' && (
+              <button
+                type="button"
+                onClick={() => void handleInstall()}
+                className="rounded-md bg-blue px-3 py-1.5 text-[12px] font-medium text-crust transition hover:brightness-110"
+              >
+                立即更新
+              </button>
+            )}
+            {stage === 'done' && (
+              <button
+                type="button"
+                onClick={() => void restartApp()}
+                className="rounded-md bg-blue px-3 py-1.5 text-[12px] font-medium text-crust transition hover:brightness-110"
+              >
+                重启应用
+              </button>
+            )}
+            {stage === 'error' && (
+              <button
+                type="button"
+                onClick={() => void openUrl(RELEASES_URL)}
+                className="rounded-md bg-surface0 px-2.5 py-1 text-[11px] text-text transition hover:bg-surface1"
+              >
+                手动下载
+              </button>
+            )}
           </div>
         </Dialog.Content>
       </Dialog.Portal>

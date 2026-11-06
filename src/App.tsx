@@ -24,7 +24,6 @@ import { isOverlayOpen } from './lib/overlay'
 import type { BookSummary, OpenedBookInfo } from './lib/types'
 import {
   UPDATER_AVAILABLE,
-  autoCheckEnabled,
   checkForUpdates,
   type AvailableUpdate,
 } from './lib/updater'
@@ -333,7 +332,8 @@ export default function App() {
   // -------------------------------------------------------------------------
 
   useEffect(() => {
-    if (!UPDATER_AVAILABLE || !autoCheckEnabled()) return
+    // autoCheck 自 P2 起并入设置 store（设置-行为分组，含旧 localStorage 键迁移）。
+    if (!UPDATER_AVAILABLE || !useReaderSettings.getState().autoCheck) return
     let cancelled = false
     const timer = window.setTimeout(() => {
       void (async () => {
