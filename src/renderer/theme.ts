@@ -10,7 +10,14 @@
 // 这就是 v1.3 修的主题割裂问题。
 
 /** 具体主题（有确定的色板） */
-export type ConcreteThemeId = 'dark' | 'light' | 'sepia' | 'green'
+export type ConcreteThemeId =
+  | 'light'
+  | 'sepia'
+  | 'green'
+  | 'mist'
+  | 'rose'
+  | 'dark'
+  | 'midnight'
 
 /** 用户可选主题：auto 跟随系统深浅色 */
 export type ThemeId = 'auto' | ConcreteThemeId
@@ -142,6 +149,48 @@ export const READING_THEMES: Record<ConcreteThemeId, ReadingTheme> = {
     selection: '#bcd6b8',
     dark: false,
   },
+  // 冷调浅色：偏蓝灰的纸面，适合白天看技术/社科类（与羊皮纸的暖黄形成对比）
+  mist: {
+    id: 'mist',
+    label: '雾蓝',
+    background: '#e8eef4',
+    foreground: '#35424f',
+    muted: '#5d6b78',
+    link: '#2f6d99',
+    accent: '#4a86b8',
+    border: '#c6d4e2',
+    surface: '#dce6ef',
+    selection: '#c3d6e6',
+    dark: false,
+  },
+  // 暖调浅色：极淡的藕粉纸面，久读不刺眼，适合小说/散文
+  rose: {
+    id: 'rose',
+    label: '藕粉',
+    background: '#f7eef0',
+    foreground: '#4f3a42',
+    muted: '#7d6270',
+    link: '#a45a7a',
+    accent: '#b9738e',
+    border: '#e3cdd6',
+    surface: '#f0e2e7',
+    selection: '#e6d0da',
+    dark: false,
+  },
+  // 纯黑（OLED）：像素级省电，也适合全黑房间里读
+  midnight: {
+    id: 'midnight',
+    label: '深夜黑',
+    background: '#000000',
+    foreground: '#d6d6e0',
+    muted: '#9a9aa8',
+    link: '#7ab0ff',
+    accent: '#8ea0ff',
+    border: '#2a2a33',
+    surface: '#121218',
+    selection: '#33334a',
+    dark: true,
+  },
 }
 
 /**
@@ -221,14 +270,76 @@ export const CHROME_PALETTES: Record<ConcreteThemeId, ChromePalette> = {
     yellow: '#9a7a2f',
     teal: '#2f7a72',
   },
+  mist: {
+    crust: '#d3dee8',
+    mantle: '#dee8f1',
+    base: '#e8eef4',
+    surface0: '#d3dfea',
+    surface1: '#c3d2e0',
+    surface2: '#b0c2d3',
+    overlay0: '#8497a8',
+    subtext: '#5d6b78',
+    text: '#35424f',
+    blue: '#2f6d99',
+    lavender: '#6a7dbb',
+    mauve: '#8a6aa8',
+    green: '#3f7a5a',
+    red: '#a8443c',
+    yellow: '#9a7a2f',
+    teal: '#2f7a8a',
+  },
+  rose: {
+    crust: '#ecdde3',
+    mantle: '#f2e7eb',
+    base: '#f7eef0',
+    surface0: '#efdde4',
+    surface1: '#e4cdd6',
+    surface2: '#d6bcc7',
+    overlay0: '#a88e9a',
+    subtext: '#7d6270',
+    text: '#4f3a42',
+    blue: '#6a6fa8',
+    lavender: '#8a7ab8',
+    mauve: '#a8638a',
+    green: '#5f7a52',
+    red: '#b04a52',
+    yellow: '#a3802f',
+    teal: '#3f7a7a',
+  },
+  midnight: {
+    crust: '#000000',
+    mantle: '#070709',
+    base: '#0d0d12',
+    surface0: '#17171f',
+    surface1: '#22222c',
+    surface2: '#2f2f3c',
+    overlay0: '#6a6a7a',
+    subtext: '#9a9aa8',
+    text: '#d6d6e0',
+    blue: '#6ea8ff',
+    lavender: '#9aa8ff',
+    mauve: '#c39bff',
+    green: '#7fd18a',
+    red: '#ff7b8a',
+    yellow: '#e8c46a',
+    teal: '#5fd0c8',
+  },
 }
 
+/**
+ * 主题顺序 = 设置页网格的行序（4 列 → 两排对齐）：
+ * 第一排浅色系（跟随系统/浅色/羊皮纸/护眼绿），
+ * 第二排冷调浅色 + 深色（雾蓝/藕粉/深色/深夜黑）。
+ */
 export const THEME_OPTIONS: Array<{ id: ThemeId; label: string }> = [
   { id: 'auto', label: '跟随系统' },
-  { id: 'dark', label: '深色' },
   { id: 'light', label: '浅色' },
   { id: 'sepia', label: '羊皮纸' },
   { id: 'green', label: '护眼绿' },
+  { id: 'mist', label: '雾蓝' },
+  { id: 'rose', label: '藕粉' },
+  { id: 'dark', label: '深色' },
+  { id: 'midnight', label: '深夜黑' },
 ]
 
 export const FONT_STACKS = {

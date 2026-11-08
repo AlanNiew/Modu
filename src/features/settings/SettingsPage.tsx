@@ -119,7 +119,7 @@ function Group({
   )
 }
 
-/** 外观：主题（5 选）+ 正文对齐。 */
+/** 外观：主题（8 选，4 列两排）+ 正文对齐。 */
 function AppearanceSection() {
   const theme = useReaderSettings((state) => state.settings.theme)
   const textAlign = useReaderSettings((state) => state.settings.textAlign)
@@ -129,7 +129,7 @@ function AppearanceSection() {
   return (
     <>
       <Group title="主题" note="主题同时作用于界面外壳与正文页面；「跟随系统」会随 Windows 深浅色设置实时切换。">
-        <div className="flex flex-wrap gap-3 pt-1">
+        <div className="grid grid-cols-4 gap-3 pt-1">
           {THEME_OPTIONS.map((option) => {
             const active: boolean = theme === option.id
             return (
@@ -638,7 +638,7 @@ function ThemeButton({
       type="button"
       onClick={onSelect}
       className={cn(
-        'flex w-[118px] flex-col items-center gap-2 rounded-lg border px-3 py-4 text-[12px] transition',
+        'flex w-full flex-col items-center gap-2 rounded-lg border px-3 py-4 text-[12px] transition',
         active
           ? 'border-blue bg-blue/10 text-text'
           : 'border-surface0 text-subtext hover:border-surface1 hover:text-text',
