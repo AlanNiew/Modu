@@ -7,8 +7,148 @@ import type { LocatorAnchor, ReaderLocator } from '../lib/locator'
 import { createFoliateBook, type FoliateBook } from './foliateBook'
 import { buildReadingCss, type ReadingSettings } from './theme'
 
-export interface ReaderApi {
-  /** 跳转到 href / `path#anchor` / CFI 等 foliate 能解析的目标 */
+/**
+ * 章节 iframe 内的右键菜单。
+ *
+ * 内容文档是独立的 document：主窗口的 React 菜单既叠不进去、坐标系也不一致，
+ * 所以在 iframe 里用原生 DOM 画一个同风格的菜单（和划线工具条一致）：
+ * - 有选区：复制 / 搜索选中文字 / 全选
+ * - 无选区：只给全选（正文是只读的，没有更多操作）
+ * 返回清理函数，调用方在换章/关闭时执行。
+ */
+function showDocContextMenu(
+  doc: Document,
+  event: MouseEvent,
+  onSearch?: (text: string) => void,
+): () => void {
+  const win = doc.defaultView
+  const existing = doc.querySelector('[data-modu-context-menu]')
+  existing?.remove()
+
+  const selection = win?.getSelection()
+  const text = selection && !selection.isCollapsed ? selection.toString().trim() : ''
+
+  const items: Array<{ label: string; hint?: string; run: () => void }> = []
+  if (text) {
+    items.push({
+      label: '复制',
+      hint: 'Ctrl+C',
+      run: () => {
+        try {
+          doc.execCommand('copy')
+        } catch {
+          // 选区失效时忽略：Ctrl+C 仍可用
+        }
+      },
+    })
+    if (onSearch) {
+      items.push({ label: '搜索选中文字', run: () => onSearch(text) })
+    }
+  }
+  items.push({
+    label: '全选',
+    hint: 'Ctrl+A',
+    run: () => {
+      const current = win?.getSelection()
+      if (!current) return
+      const range = doc.createRange()
+      range.selectNodeContents(doc.body)
+      current.removeAllRanges()
+      current.addRange(range)
+    },
+  })
+
+  const box = doc.createElement('div')
+  box.setAttribute('data-modu-context-menu', '1')
+  box.style.cssText = [
+    'position:fixed',
+    `left:${Math.round(event.clientX)}px`,
+    `top:${Math.round(event.clientY)}px`,
+    'min-width:184px',
+    'padding:4px 0',
+    'border-radius:10px',
+    'background:rgba(24,24,37,.97)',
+    'box-shadow:0 8px 24px rgba(0,0,0,.5)',
+    'border:1px solid rgba(255,255,255,.10)',
+    'z-index:2147483000',
+    'font:12px/1.5 system-ui, sans-serif',
+    'color:#cdd6f4',
+    'user-select:none',
+  ].join(';')
+  box.addEventListener('mousedown', (e) => e.preventDefault())
+  box.addEventListener('contextmenu', (e) => e.preventDefault())
+
+  const cleanup = () => {
+    box.remove()
+    doc.removeEventListener('mousedown', onOutside, true)
+    doc.removeEventListener('keydown', onKey, true)
+    win?.removeEventListener('wheel', cleanup, true)
+    win?.removeEventListener('resize', cleanup)
+  }
+  const onOutside = (e: MouseEvent) => {
+    if (!box.contains(e.target as Node)) cleanup()
+  }
+  const onKey = (e: KeyboardEvent) => {
+    if (e.key === 'Escape') cleanup()
+  }
+
+  for (const item of items) {
+    const button = doc.createElement('button')
+    button.type = 'button'
+    button.style.cssText = [
+      'display:flex',
+      'align-items:center',
+      'justify-content:space-between',
+      'gap:24px',
+      'width:100%',
+      'padding:5px 12px',
+      'border:0',
+      'background:transparent',
+      'color:inherit',
+      'font:inherit',
+      'text-align:left',
+      'cursor:pointer',
+    ].join(';')
+    const label = doc.createElement('span')
+    label.textContent = item.label
+    button.appendChild(label)
+    if (item.hint) {
+      const hint = doc.createElement('span')
+      hint.textContent = item.hint
+      hint.style.cssText = 'color:rgba(205,214,244,.45);font:10.5px/1.5 monospace'
+      button.appendChild(hint)
+    }
+    button.addEventListener('mouseenter', () => {
+      button.style.background = 'rgba(255,255,255,.09)'
+    })
+    button.addEventListener('mouseleave', () => {
+      button.style.background = 'transparent'
+    })
+    button.addEventListener('click', () => {
+      cleanup()
+      item.run()
+    })
+    box.appendChild(button)
+  }
+
+  doc.body.appendChild(box)
+
+  // 贴边翻转：量完真实尺寸再修正，避免菜单跑出可视区
+  const rect = box.getBoundingClientRect()
+  const maxLeft = (win?.innerWidth ?? 0) - rect.width - 8
+  const maxTop = (win?.innerHeight ?? 0) - rect.height - 8
+  box.style.left = `${Math.max(8, Math.min(event.clientX, maxLeft))}px`
+  box.style.top = `${Math.max(8, Math.min(event.clientY, maxTop))}px`
+
+  doc.addEventListener('mousedown', onOutside, true)
+  doc.addEventListener('keydown', onKey, true)
+  win?.addEventListener('wheel', cleanup, true)
+  win?.addEventListener('resize', cleanup)
+
+  return cleanup
+}
+
+export interface ReaderApi {  /** 跳转到 href / `path#anchor` / CFI 等 foliate 能解析的目标 */
   goTo(target: unknown): Promise<unknown>
   /** 跳到指定 spine 章节，并落在章内 fraction（0..1）处 */
   goToChapter(index: number, fraction?: number): Promise<void>
@@ -61,6 +201,8 @@ interface ReaderViewProps {
   onAnnotate?: (draft: AnnotationDraft, mode: 'highlight' | 'note') => void
   /** 点了已有划线 */
   onAnnotationActivate?: (id: number) => void
+  /** 右键菜单里的「搜索选中文字」：交给阅读页打开侧栏搜索 */
+  onContextSearch?: (text: string) => void
 }
 
 export function ReaderView({
@@ -76,6 +218,7 @@ export function ReaderView({
   onError,
   onAnnotate,
   onAnnotationActivate,
+  onContextSearch,
 }: ReaderViewProps) {
   const hostRef = useRef<HTMLDivElement>(null)
   const viewRef = useRef<FoliateView | null>(null)
@@ -94,6 +237,7 @@ export function ReaderView({
     onError,
     onAnnotate,
     onAnnotationActivate,
+    onContextSearch,
   })
 
   settingsRef.current = settings
@@ -106,6 +250,7 @@ export function ReaderView({
     onError,
     onAnnotate,
     onAnnotationActivate,
+    onContextSearch,
   }
 
   const applySettings = useCallback(
@@ -274,6 +419,13 @@ export function ReaderView({
     let annoRanges = new Map<number, { startRaw: number; endRaw: number }>()
     let lastRenderedDoc: Document | null = null
     let toolbar: HTMLDivElement | null = null
+    // 章节内右键菜单的关闭函数（换章/收起时调用）
+    let docMenuClose: (() => void) | null = null
+
+    const closeDocMenu = () => {
+      docMenuClose?.()
+      docMenuClose = null
+    }
 
     const hideToolbar = () => {
       toolbar?.remove()
@@ -619,13 +771,27 @@ export function ReaderView({
           const detail = event.detail
           callbacksRef.current.onLoad?.({ index: Number(detail.index ?? 0) })
           hideToolbar()
+          closeDocMenu()
           const doc = detail.doc
           doc?.addEventListener('click', (clickEvent) => onDocClick(clickEvent, doc))
           // passive: false —— 需要 preventDefault 阻止 iframe 自身滚动
           doc?.addEventListener('wheel', onDocWheel, { passive: false })
           doc?.addEventListener('mouseup', (upEvent) => onDocMouseUp(upEvent, doc))
+          doc?.addEventListener('contextmenu', (menuEvent) => {
+            menuEvent.preventDefault()
+            hideToolbar()
+            closeDocMenu()
+            docMenuClose = showDocContextMenu(
+              doc,
+              menuEvent,
+              callbacksRef.current.onContextSearch,
+            )
+          })
           doc?.addEventListener('keydown', (keyEvent) => {
-            if (keyEvent.key === 'Escape') hideToolbar()
+            if (keyEvent.key === 'Escape') {
+              hideToolbar()
+              closeDocMenu()
+            }
           })
           if (doc) {
             docRef.current = doc

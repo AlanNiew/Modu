@@ -5,6 +5,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import { Loader2, PanelLeft, Settings2 } from 'lucide-react'
 
 import { CloseConfirmDialog } from './components/CloseConfirmDialog'
+import { ContextMenu, type ContextMenuItem } from './components/ContextMenu'
 import { HelpDialog } from './components/HelpDialog'
 import { TitleBar, TitleBarButton } from './components/TitleBar'
 import { UpdateDialog } from './components/UpdateDialog'
@@ -13,6 +14,7 @@ import { ReadingSettingsPanel } from './features/reader/ReadingSettingsPanel'
 import { ReaderPage } from './features/reader/ReaderPage'
 import { SettingsPage, type SettingsTabId } from './features/settings/SettingsPage'
 import { ShelfPage } from './features/shelf/ShelfPage'
+import { copyText, pasteIntoFocused, selectAll, selectedText } from './lib/clipboard'
 import { CMD, registerCommand, runCommand, unregisterAll } from './lib/commands'
 import {
   closeBook,
@@ -87,6 +89,12 @@ export default function App() {
   const [availableUpdate, setAvailableUpdate] = useState<AvailableUpdate | null>(null)
   // 关闭询问（P5）：Rust 拦截 CloseRequested 后发事件，这里弹一次性对话框。
   const [closeConfirmOpen, setCloseConfirmOpen] = useState(false)
+  // 右键菜单（P7）：位置 + 当前上下文可执行的动作。
+  const [contextMenu, setContextMenu] = useState<{
+    x: number
+    y: number
+    items: ContextMenuItem[]
+  } | null>(null)
 
   const importPaths = useLibrary((state) => state.importPaths)
   const chromeTitle = useChromeStore((state) => state.title)
@@ -210,6 +218,54 @@ export default function App() {
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [toggleFullscreen])
+
+  // 右键菜单（P7）：屏蔽 WebView2 浏览器默认菜单（返回/刷新/另存为/打印），
+  // 换成应用自己的上下文菜单。阅读页 iframe 里由 ReaderView 自己处理。
+  useEffect(() => {
+    const onContextMenu = (event: MouseEvent) => {
+      event.preventDefault()
+      const target = event.target as HTMLElement | null
+      const text = selectedText()
+      const isField =
+        target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement
+      const items: ContextMenuItem[] = []
+      if (text.trim()) {
+        items.push({
+          id: 'copy',
+          label: '复制',
+          shortcut: 'Ctrl+C',
+          onSelect: () => void copyText(text),
+        })
+      }
+      if (isField) {
+        items.push({
+          id: 'paste',
+          label: '粘贴',
+          shortcut: 'Ctrl+V',
+          onSelect: () => void pasteIntoFocused(),
+        })
+      }
+      if (text.trim() || isField) {
+        items.push({
+          id: 'select-all',
+          label: '全选',
+          shortcut: 'Ctrl+A',
+          onSelect: () => {
+            if (isField) target?.focus()
+            selectAll()
+          },
+        })
+      }
+      // 没有可用动作时只屏蔽原生菜单，不弹空菜单。
+      if (items.length === 0) {
+        setContextMenu(null)
+        return
+      }
+      setContextMenu({ x: event.clientX, y: event.clientY, items })
+    }
+    document.addEventListener('contextmenu', onContextMenu)
+    return () => document.removeEventListener('contextmenu', onContextMenu)
+  }, [])
 
   // 从系统全屏按钮（或 F11）退出时同步状态
   useEffect(() => {
@@ -537,6 +593,15 @@ export default function App() {
       <HelpDialog open={helpOpen} onOpenChange={setHelpOpen} />
 
       <CloseConfirmDialog open={closeConfirmOpen} onOpenChange={setCloseConfirmOpen} />
+
+      {contextMenu && (
+        <ContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          items={contextMenu.items}
+          onClose={() => setContextMenu(null)}
+        />
+      )}
 
       <UpdateDialog
         open={updateOpen}

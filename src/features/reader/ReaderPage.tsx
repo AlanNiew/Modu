@@ -499,6 +499,19 @@ export function ReaderPage({
     window.setTimeout(() => searchInputRef.current?.focus(), 60)
   }, [])
 
+  /**
+   * 正文右键菜单「搜索选中文字」：把选中的词填进侧栏搜索并立即执行。
+   * 截断到 40 字——整段选中多半不是要搜的词，太长会让搜索无意义。
+   */
+  const handleContextSearch = useCallback((text: string) => {
+    const query = text.trim().slice(0, 40)
+    if (!query) return
+    setSidebarTab('search')
+    setSidebarOpen(true)
+    setSearchQuery(query)
+    window.setTimeout(() => searchInputRef.current?.focus(), 60)
+  }, [])
+
   // 阅读器快捷键：Ctrl+B 侧栏、Ctrl+K 搜索、Ctrl+D 书签（F1/F11 由 App 处理）
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -885,6 +898,7 @@ export function ReaderPage({
               annotations={annotations}
               onAnnotate={(draft, mode) => void handleAnnotate(draft, mode)}
               onAnnotationActivate={handleAnnotationActivate}
+              onContextSearch={handleContextSearch}
               onReady={(api) => void handleReady(api)}
               onRelocate={(state) => {
                 pageKeyRef.current = `${state.index}:${state.page}`
