@@ -56,7 +56,8 @@ export function ReadingSettingsPanel({ children }: ReadingSettingsPanelProps) {
           <div className="space-y-4">
             <div className="space-y-2">
               <div className="text-[11px] text-subtext">阅读主题</div>
-              <div className="grid grid-cols-5 gap-1.5">
+              {/* 4 列 × 2 排：8 套主题正好排满，与设置页网格同口径 */}
+              <div className="grid grid-cols-4 gap-1.5">
                 {THEME_OPTIONS.map((option) => {
                   const active = settings.theme === option.id
                   return (
