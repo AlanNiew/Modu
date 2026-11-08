@@ -85,8 +85,8 @@ fn init_state(app: &tauri::AppHandle) -> Result<state::AppState, Box<dyn std::er
 }
 
 fn log_plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
-    // 开发构建只写 stdout：DSH 沙箱不允许子进程写 %LOCALAPPDATA%，
-    // 而 tauri-plugin-log 的 LogDir target 初始化失败会直接让 App 启动失败。
+    // 开发构建只写 stdout：dev 下不去碰用户目录（有些安全软件会拦住未签名 exe
+    // 写 %LOCALAPPDATA%，tauri-plugin-log 的 LogDir 初始化失败会直接让 App 起不来）。
     let builder = tauri_plugin_log::Builder::new()
         .clear_targets()
         .level(log::LevelFilter::Info)
@@ -94,25 +94,139 @@ fn log_plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
             tauri_plugin_log::TargetKind::Stdout,
         ));
     #[cfg(not(debug_assertions))]
-    let builder = match std::env::var_os("MODU_DATA_DIR") {
-        // 便携模式：日志跟着数据目录走，放在 <MODU_DATA_DIR>/logs/ 下。
-        // 这样便携版不会去写 %LOCALAPPDATA%，U 盘、只读权限、受控环境都能跑。
-        Some(dir) => builder.target(tauri_plugin_log::Target::new(
-            tauri_plugin_log::TargetKind::Folder {
-                path: std::path::PathBuf::from(dir).join("logs"),
-                file_name: Some("modu".into()),
-            },
-        )),
-        None => builder.target(tauri_plugin_log::Target::new(
-            tauri_plugin_log::TargetKind::LogDir {
-                file_name: Some("modu".into()),
-            },
-        )),
-    };
+    let builder = builder.target(tauri_plugin_log::Target::new(match log_folder() {
+        // 日志跟着「数据目录」走，而不是 Tauri 默认的 LogDir（%LOCALAPPDATA%\<id>\logs）：
+        // 便携版不会写用户目录；被安全软件盯上的机器也不会因为日志写不进去而启动失败。
+        Some(folder) => tauri_plugin_log::TargetKind::Folder {
+            path: folder,
+            file_name: Some("modu".into()),
+        },
+        None => tauri_plugin_log::TargetKind::LogDir {
+            file_name: Some("modu".into()),
+        },
+    }));
     builder.build()
 }
 
+/// release 版日志目录：`<MODU_DATA_DIR>/logs` 或 `%APPDATA%\Modu\logs`。
+/// （debug 只写 stdout，所以这个函数只给 release 用）
+#[cfg(not(debug_assertions))]
+fn log_folder() -> Option<std::path::PathBuf> {
+    if let Some(dir) = std::env::var_os("MODU_DATA_DIR") {
+        return Some(std::path::PathBuf::from(dir).join("logs"));
+    }
+    std::env::var_os("APPDATA")
+        .map(|appdata| std::path::PathBuf::from(appdata).join("Modu").join("logs"))
+}
+
+/// 给 WebView2 指定用户数据目录，避开默认的 `%LOCALAPPDATA%\<bundle id>\EBWebView`。
+///
+/// 为什么需要：实测部分安全软件（如本机的 Lenovo/火绒组合）会拦截未签名 exe
+/// 往 `%LOCALAPPDATA%` 写文件，WebView2 创建环境时直接返回 `0x8000FFFF` /
+/// `0x800700AA`，表现为「打开就崩、没有任何窗口」。把缓存放到应用自己的位置
+/// 可以绕开这类误拦，也让 dev 与已安装版不再抢同一个缓存目录。
+///
+/// 优先级：显式环境变量 > `MODU_DATA_DIR`（便携版）> 开发构建放 `target/`。
+fn prepare_webview_profile() {
+    if std::env::var_os("WEBVIEW2_USER_DATA_FOLDER").is_some() {
+        return;
+    }
+    let mut profile: Option<std::path::PathBuf> = None;
+    if let Some(dir) = std::env::var_os("MODU_DATA_DIR") {
+        profile = Some(std::path::PathBuf::from(dir).join("EBWebView"));
+    }
+    #[cfg(debug_assertions)]
+    if profile.is_none() {
+        // target\debug\modu.exe → target\webview-profile（在项目目录内，不受用户目录拦截影响）
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(target_dir) = exe.parent().and_then(|dir| dir.parent()) {
+                profile = Some(target_dir.join("webview-profile"));
+            }
+        }
+    }
+    let Some(path) = profile else { return };
+    if let Err(err) = std::fs::create_dir_all(&path) {
+        log::warn!("创建 WebView2 缓存目录失败（将退回默认目录）: {err}");
+        return;
+    }
+    // 在创建任何线程之前设置环境变量：Tauri 尚未初始化，这里仍是单线程。
+    // SAFETY: 同上——此刻没有并发读取环境的线程。
+    unsafe {
+        std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", &path);
+    }
+}
+
+/// 启动失败时的可执行提示（比一句 panic 有用得多）。
+fn report_startup_failure(err: &tauri::Error) -> ! {
+    eprintln!("墨读启动失败: {err}");
+    let text = err.to_string();
+    if text.contains("WebView2") || text.contains("0x8000") || text.contains("0x8007") {
+        eprintln!();
+        eprintln!("这通常是 WebView2 环境创建失败，常见原因：");
+        eprintln!("  1) 安全软件（火绒/Defender/360 等）拦截了 modu.exe 写用户目录；");
+        eprintln!("     把 modu.exe 及其安装目录加入信任区/白名单即可。");
+        eprintln!("  2) 已有另一个墨读实例占用了 WebView2 缓存：先退出托盘里的墨读再启动。");
+        eprintln!("  3) 仍不行时可手动指定缓存目录后重试：");
+        eprintln!("     set WEBVIEW2_USER_DATA_FOLDER=%LOCALAPPDATA%\\Modu\\EBWebView");
+    }
+    std::process::exit(1)
+}
+
+/// 窗口几何修正。
+///
+/// `tauri-plugin-window-state` 会恢复上次的尺寸/位置：如果上次在更大的显示器
+/// （或外接屏已拔掉）上关窗口，恢复出来的窗口可能比当前屏幕还大、整个落在屏外，
+/// 用户看到的现象就是「进程在跑但没有窗口」。这里把它拉回可视区。
+fn fix_window_geometry(app: &tauri::AppHandle) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    let (Ok(position), Ok(size)) = (window.outer_position(), window.outer_size()) else {
+        return;
+    };
+    let Ok(monitors) = window.available_monitors() else {
+        return;
+    };
+
+    // 至少要有 120x120 落在某个显示器里，否则视为「跑到屏外」
+    let x = position.x as i64;
+    let y = position.y as i64;
+    let width = size.width as i64;
+    let height = size.height as i64;
+    let visible = monitors.iter().any(|monitor| {
+        let origin = monitor.position();
+        let area = monitor.size();
+        let overlap_x =
+            (x + width).min(origin.x as i64 + area.width as i64) - x.max(origin.x as i64);
+        let overlap_y =
+            (y + height).min(origin.y as i64 + area.height as i64) - y.max(origin.y as i64);
+        overlap_x >= 120 && overlap_y >= 120
+    });
+
+    let mut resized = false;
+    if let Ok(Some(primary)) = window.primary_monitor() {
+        let area = primary.size();
+        // 留出任务栏/标题栏余量：宽度 95%、高度 90%
+        let max_width = (area.width as f64 * 0.95) as u32;
+        let max_height = (area.height as f64 * 0.9) as u32;
+        if size.width > max_width || size.height > max_height {
+            let _ = window.set_size(tauri::PhysicalSize::new(
+                size.width.min(max_width),
+                size.height.min(max_height),
+            ));
+            resized = true;
+        }
+    }
+
+    if !visible || resized {
+        let _ = window.center();
+    }
+}
+
 pub fn run() {
+    // 必须在建窗口之前：决定 WebView2 缓存落在哪（见函数注释）。
+    prepare_webview_profile();
+
     tauri::Builder::default()
         // 单实例必须最先注册：第二次启动时把已有窗口拉到前台。
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -140,6 +254,8 @@ pub fn run() {
             app.manage(state);
             // 托盘必须在 setup 里建：此时窗口已存在，左键切换可见性才有意义。
             tray::init(app.handle());
+            // 恢复的窗口位置/尺寸可能来自别的显示器配置，这里兜底拉回可视区。
+            fix_window_geometry(app.handle());
             Ok(())
         })
         // 关闭主窗口时的行为（托盘 / 退出 / 询问），见 prefs::CloseAction。
@@ -218,7 +334,7 @@ pub fn run() {
             commands::autostart_set,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .unwrap_or_else(|err| report_startup_failure(&err));
 }
 
 #[cfg(test)]
